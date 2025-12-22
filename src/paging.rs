@@ -29,9 +29,12 @@ struct SlottedPage {
 
 impl SlottedPage {
     fn new() -> Self {
-        Self {
+        let mut new_instance = Self {
             buffer: [0u8; PAGE_SIZE],
-        }
+        };
+        new_instance.set_flags(0x00);
+
+        new_instance
     }
 
     fn read_le<T, const N: usize>(buf: &[u8], offset: usize, f: fn([u8; N]) -> T) -> T {
