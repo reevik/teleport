@@ -1,13 +1,21 @@
+use std::clone;
+
+use alloc::vec::Vec;
+
+type PageId = u32;
+
+// TODO this needs to be persisted in a configuration file.
+static mut next_page_id:u32 = 0;
 const PAGE_SIZE: usize = 4096;
 
 const SIZE_NUM_OF_SLOTS: usize = size_of::<u16>();
-const SIZE_PAGE_ID: usize = size_of::<u32>();
+const SIZE_PAGE_ID: usize = size_of::<PageId>();
 const SIZE_PAGE_TYPE: usize = size_of::<u8>();
 const SIZE_FLAGS: usize = size_of::<u8>();
-const SIZE_LEFT_MOST: usize = size_of::<u32>();
-const SIZE_LEFT_SIBLING: usize = size_of::<u32>();
-const SIZE_RIGHT_SIBLING: usize = size_of::<u32>();
-const SIZE_PARENT_PAGE_ID: usize = size_of::<u32>();
+const SIZE_LEFT_MOST: usize = size_of::<PageId>();
+const SIZE_LEFT_SIBLING: usize = size_of::<PageId>();
+const SIZE_RIGHT_SIBLING: usize = size_of::<PageId>();
+const SIZE_PARENT_PAGE_ID: usize = size_of::<PageId>();
 const SIZE_FREE_START: usize = size_of::<u16>();
 const SIZE_FREE_END: usize = size_of::<u16>();
 
@@ -40,8 +48,23 @@ struct Slot {
     buffer: Vec<u8>
 }
 
+enum PageType {
+    INNER,
+    LEAF
+}
+
+impl From<u8> for PageType {
+    fn from(value: u8) -> Self {
+        if (value == 0) {
+            return Self::INNER;
+        }
+        Self::LEAF
+    }
+}
+
 impl SlottedPage {
-    pub fn new_inner() -> Self {
+
+    fn new() -> Self {
         let mut new_instance = Self {
             buffer: [0u8; PAGE_SIZE],
         };
@@ -52,11 +75,44 @@ impl SlottedPage {
         new_instance.set_left_sibling(0);
         new_instance.set_parent(0);
         new_instance.set_num_of_slots(0);
-        new_instance.set_page_type(0);
         new_instance.set_free_start(PAGE_SIZE as u16);
         new_instance.set_free_end(TOTAL_HEADER_SIZE as u16);
-
+        new_instance.set_page_type(0);
+        unsafe {
+            new_instance.set_page_id(next_page_id);
+            next_page_id += 1;
+        }
         new_instance
+    }
+
+    pub fn new_leaf() -> Self {
+       let mut instance = Self::new();
+       instance.set_page_type(0);
+       instance
+    }
+
+    pub fn new_inner() -> Self {
+       let mut instance = Self::new();
+       instance.set_page_type(1);
+       instance
+    }
+
+    pub fn add_left_most(&mut self, left_most_page_id: PageId) {
+        self.set_left_most_page_id(left_most_page_id); 
+    }
+
+    pub fn add_key_ref(&mut self, key: &str, page_id: PageId) {
+        let key_bytes = key.as_bytes();
+        let slot_payload_len = key_bytes.len() + size_of::<PageId>();
+        let slot_buffer = &mut slot_payload_len.to_le_bytes();
+        slot_buffer.extend(key_bytes);
+        slot_buffer.extend_from_slice(&page_id.to_le_bytes());
+        if usize::from(self.free_end() - self.free_start()) < slot_buffer.len() {
+            panic!("No available space in the page.")
+        }
+        let slot_arr:[u8::slot_buffer.len()] = slot_buffer.iter().try_into().expect("wrong length");
+        self.buffer[free_end - slot_arr.len()..free_end].copy_from_slice(&slot_arr);
+
     }
 
     fn read_le<T, const N: usize>(buf: &[u8], offset: usize, f: fn([u8; N]) -> T) -> T {
