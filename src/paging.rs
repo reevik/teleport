@@ -11,6 +11,15 @@ const SIZE_PARENT_PAGE_ID: usize = size_of::<u32>();
 const SIZE_FREE_START: usize = size_of::<u16>();
 const SIZE_FREE_END: usize = size_of::<u16>();
 
+const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
+    + SIZE_RIGHT_SIBLING
+    + SIZE_LEFT_SIBLING
+    + SIZE_LEFT_MOST
+    + SIZE_PARENT_PAGE_ID
+    + SIZE_PAGE_ID
+    + SIZE_PAGE_TYPE
+    + SIZE_NUM_OF_SLOTS;
+
 /// Offsets in the
 const OFFSET_NUM_OF_SLOTS: usize = 0;
 const OFFSET_PAGE_ID: usize = OFFSET_NUM_OF_SLOTS + SIZE_NUM_OF_SLOTS;
@@ -23,16 +32,29 @@ const OFFSET_PARENT_PAGE_ID: usize = OFFSET_RIGHT_SIBLING + SIZE_RIGHT_SIBLING;
 const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + SIZE_FREE_START;
 const OFFSET_FREE_END: usize = OFFSET_FREE_START + SIZE_FREE_START;
 
-struct SlottedPage {
+pub struct SlottedPage {
     buffer: [u8; PAGE_SIZE],
 }
 
+struct Slot {
+    buffer: Vec<u8>
+}
+
 impl SlottedPage {
-    fn new() -> Self {
+    pub fn new_inner() -> Self {
         let mut new_instance = Self {
             buffer: [0u8; PAGE_SIZE],
         };
-        new_instance.set_flags(0x00);
+
+        new_instance.set_flags(0);
+        new_instance.set_left_most_page_id(0);
+        new_instance.set_right_sibling(0);
+        new_instance.set_left_sibling(0);
+        new_instance.set_parent(0);
+        new_instance.set_num_of_slots(0);
+        new_instance.set_page_type(0);
+        new_instance.set_free_start(PAGE_SIZE as u16);
+        new_instance.set_free_end(TOTAL_HEADER_SIZE as u16);
 
         new_instance
     }
