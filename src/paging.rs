@@ -115,14 +115,15 @@ impl SlottedPage {
         self.set_left_most_page_id(left_most_page_id);
     }
 
-    fn add_key_ref<T: PagePayload>(&mut self, key: &str, ref_id: T) -> Result<(), PageError> {
-        let key_bytes = key.as_bytes();
-        let slot_payload_len = (key_bytes.len() + size_of::<T>()) as PSize;
+    fn add_key_ref<T: PagePayload>(&mut self, key: &str, payload: T) -> Result<(), PageError> {
+        let key_in_bytes = key.as_bytes();
+        let payload_len = (key_in_bytes.len() + size_of::<T>()) as PSize;
         let mut slot: Vec<u8> = Vec::with_capacity(Self::slot_size::<T>(key) as usize);
-        //  ... < | key | payload | header | key | payload | header | <- MAX_PAGE_SIZE
-        slot.extend_from_slice(key_bytes);
-        slot.extend_from_slice(&ref_id.to_le_bytes());
-        slot.extend_from_slice(&slot_payload_len.to_le_bytes());
+
+        slot.extend_from_slice(key_in_bytes);
+        slot.extend_from_slice(&payload.to_le_bytes());
+        slot.extend_from_slice(&(key_in_bytes.len() as PSize).to_le_bytes());
+        slot.extend_from_slice(&payload_len.to_le_bytes());
 
         let required_space = slot.len() + SIZE_OF_SLOT_TABLE_ITEM;
         if self.available_size() < required_space as PSize {
@@ -135,7 +136,7 @@ impl SlottedPage {
     }
 
     fn slot_size<T: PagePayload>(key: &str) -> PSize {
-        (size_of::<PSize>() + key.as_bytes().len() + size_of::<T>()) as PSize
+        (size_of::<PSize>() + size_of::<PSize>() + key.as_bytes().len() + size_of::<T>()) as PSize
     }
 
     fn add_to_slot_table(&mut self, new_free_end: &PSize) {
@@ -146,6 +147,16 @@ impl SlottedPage {
         self.set_free_start(free_start + SIZE_OF_SLOT_TABLE_ITEM as PSize);
         self.set_num_of_slots(self.num_of_slots() + 1);
         debug_assert!(self.free_start() <= self.free_end());
+    }
+
+    fn get_key_payload<T: PagePayload>(&self, index: PageId) -> Result<String, T> {
+        let slot_offset = Self::read_le::<PSize, SIZE_OF_SLOT_TABLE_ITEM>(
+            &self.buffer,
+            TOTAL_HEADER_SIZE + (index as usize * size_of::<PageId>()),
+            PSize::from_le_bytes,
+        );
+
+        Ok("".to_string(),)
     }
 
     fn add_slot(&mut self, slot: &Vec<u8>) -> PSize {
