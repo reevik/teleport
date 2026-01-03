@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use std::error::Error;
 
 type PageId = u32;
 
@@ -25,14 +26,16 @@ const SIZE_FREE_START: usize = size_of::<PSize>();
 const SIZE_FREE_END: usize = size_of::<PSize>();
 const SIZE_OF_SLOT_TABLE_ITEM: usize = size_of::<PSize>();
 
-const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
+pub const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
     + SIZE_RIGHT_SIBLING
     + SIZE_LEFT_SIBLING
     + SIZE_LEFT_MOST
     + SIZE_PARENT_PAGE_ID
     + SIZE_PAGE_ID
     + SIZE_PAGE_TYPE
-    + SIZE_NUM_OF_SLOTS;
+    + SIZE_NUM_OF_SLOTS
+    + SIZE_FREE_START
+    + SIZE_FREE_END;
 
 /// Offsets in the
 const OFFSET_NUM_OF_SLOTS: usize = 0;
@@ -43,7 +46,7 @@ const OFFSET_LEFT_MOST: usize = OFFSET_FLAGS + SIZE_FLAGS;
 const OFFSET_LEFT_SIBLING: usize = OFFSET_LEFT_MOST + SIZE_LEFT_MOST;
 const OFFSET_RIGHT_SIBLING: usize = OFFSET_LEFT_SIBLING + SIZE_LEFT_SIBLING;
 const OFFSET_PARENT_PAGE_ID: usize = OFFSET_RIGHT_SIBLING + SIZE_RIGHT_SIBLING;
-const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + SIZE_FREE_START;
+const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + SIZE_PARENT_PAGE_ID;
 const OFFSET_FREE_END: usize = OFFSET_FREE_START + SIZE_FREE_START;
 
 pub struct SlottedPage {
@@ -51,13 +54,15 @@ pub struct SlottedPage {
 }
 
 trait PagePayload {
-    const SIZE: usize;
     fn to_le_bytes(&self) -> Vec<u8>;
 }
 
+impl PagePayload for &str {
+    fn to_le_bytes(&self) -> Vec<u8> {
+        self.as_bytes().iter().map(|&b| b).collect()
+    }
+}
 impl PagePayload for PageId {
-    const SIZE: usize = size_of::<PageId>();
-
     fn to_le_bytes(&self) -> Vec<u8> {
         PageId::to_le_bytes(*self).to_vec()
     }
@@ -82,6 +87,8 @@ impl SlottedPage {
         let mut new_instance = Self {
             buffer: [0u8; PAGE_SIZE as usize],
         };
+
+        println!("TOTAL_HEADER_SIZE={}", TOTAL_HEADER_SIZE);
 
         new_instance.set_flags(0);
         new_instance.set_left_most_page_id(0);
@@ -117,13 +124,14 @@ impl SlottedPage {
 
     fn add_key_ref<T: PagePayload>(&mut self, key: &str, payload: T) -> Result<(), PageError> {
         let key_in_bytes = key.as_bytes();
-        let payload_len = (key_in_bytes.len() + size_of::<T>()) as PSize;
-        let mut slot: Vec<u8> = Vec::with_capacity(Self::slot_size::<T>(key) as usize);
+        let payload_in_bytes = payload.to_le_bytes();
+        let payload_len = payload_in_bytes.len() as PSize;
+        let mut slot: Vec<u8> = Vec::with_capacity(Self::slot_size::<T>(key, payload) as usize);
 
-        slot.extend_from_slice(key_in_bytes);
-        slot.extend_from_slice(&payload.to_le_bytes());
-        slot.extend_from_slice(&(key_in_bytes.len() as PSize).to_le_bytes());
         slot.extend_from_slice(&payload_len.to_le_bytes());
+        slot.extend_from_slice(&(key_in_bytes.len() as PSize).to_le_bytes());
+        slot.extend_from_slice(key_in_bytes);
+        slot.extend_from_slice(&payload_in_bytes);
 
         let required_space = slot.len() + SIZE_OF_SLOT_TABLE_ITEM;
         if self.available_size() < required_space as PSize {
@@ -131,17 +139,22 @@ impl SlottedPage {
         }
         let new_free_end = self.add_slot(&mut slot);
         // advance the free start and slot table with the new free end.
-        self.add_to_slot_table(&new_free_end);
+        self.add_to_slot_table(new_free_end);
         Ok(())
     }
 
-    fn slot_size<T: PagePayload>(key: &str) -> PSize {
-        (size_of::<PSize>() + size_of::<PSize>() + key.as_bytes().len() + size_of::<T>()) as PSize
+    fn slot_size<T: PagePayload>(key: &str, payload: T) -> PSize {
+        (size_of::<PSize>()
+            + size_of::<PSize>()
+            + key.as_bytes().len()
+            + payload.to_le_bytes().len()) as PSize
     }
 
-    fn add_to_slot_table(&mut self, new_free_end: &PSize) {
+    fn add_to_slot_table(&mut self, new_free_end: PSize) {
         let free_start = self.free_start();
         let new_free_end_offset = &new_free_end.to_le_bytes();
+        println!("free_start={}", free_start);
+        println!("new_free_end={}", new_free_end);
         self.buffer[free_start as usize..free_start as usize + SIZE_OF_SLOT_TABLE_ITEM]
             .copy_from_slice(new_free_end_offset);
         self.set_free_start(free_start + SIZE_OF_SLOT_TABLE_ITEM as PSize);
@@ -149,14 +162,43 @@ impl SlottedPage {
         debug_assert!(self.free_start() <= self.free_end());
     }
 
-    fn get_key_payload<T: PagePayload>(&self, index: PageId) -> Result<String, T> {
+    fn get_key_payload(&self, index: PSize) -> Result<(String, String), Box<dyn Error>> {
+        let offset_index = TOTAL_HEADER_SIZE + (index as usize * size_of::<PSize>());
+        println!("offset_index = {:?}", offset_index);
         let slot_offset = Self::read_le::<PSize, SIZE_OF_SLOT_TABLE_ITEM>(
             &self.buffer,
-            TOTAL_HEADER_SIZE + (index as usize * size_of::<PageId>()),
+            offset_index,
+            PSize::from_le_bytes,
+        );
+        println!("slot_offset = {:?}", slot_offset);
+
+        let payload_len = Self::read_le::<PSize, SIZE_OF_SLOT_TABLE_ITEM>(
+            &self.buffer,
+            slot_offset as usize,
             PSize::from_le_bytes,
         );
 
-        Ok("".to_string(),)
+        let key_len = Self::read_le::<PSize, SIZE_OF_SLOT_TABLE_ITEM>(
+            &self.buffer,
+            (slot_offset as usize + SIZE_OF_SLOT_TABLE_ITEM),
+            PSize::from_le_bytes,
+        );
+
+        let key = Self::read_le_into_buffer::<String>(
+            &self.buffer,
+            (slot_offset as usize + (2 * SIZE_OF_SLOT_TABLE_ITEM)),
+            key_len as usize,
+            |b| String::from_utf8_lossy(b.as_slice()).to_string(),
+        );
+
+        let payload = Self::read_le_into_buffer::<String>(
+            &self.buffer,
+            (slot_offset as usize + (2 * SIZE_OF_SLOT_TABLE_ITEM) + key_len as usize),
+            payload_len as usize,
+            |b| String::from_utf8_lossy(b.as_slice()).to_string(),
+        );
+
+        Ok((key, payload))
     }
 
     fn add_slot(&mut self, slot: &Vec<u8>) -> PSize {
@@ -166,6 +208,7 @@ impl SlottedPage {
         self.buffer[new_free_end as usize..free_end as usize].copy_from_slice(&slot);
         self.set_free_end(new_free_end);
         debug_assert!(self.free_start() <= self.free_end());
+        // As we reverse traverse the slot blocks, the old free_end becomes the start of the slot.
         new_free_end
     }
 
@@ -177,6 +220,11 @@ impl SlottedPage {
         let slice = &buf[offset..offset + N];
         let arr: [u8; N] = slice.try_into().expect("slice length mismatch");
         f(arr)
+    }
+
+    fn read_le_into_buffer<T>(buf: &[u8], offset: usize, length: usize, f: fn(Vec<u8>) -> T) -> T {
+        let buffer_ref = buf[offset..offset + length].to_vec();
+        f(buffer_ref)
     }
 
     fn write_le<T, const N: usize>(buf: &mut [u8], offset: usize, value: T, f: fn(T) -> [u8; N]) {
@@ -304,7 +352,7 @@ impl SlottedPage {
         );
     }
 
-    fn free_start(&self) -> PSize {
+    pub(crate) fn free_start(&self) -> PSize {
         Self::read_le::<PSize, SIZE_FREE_START>(
             &self.buffer,
             OFFSET_FREE_START,
@@ -313,6 +361,7 @@ impl SlottedPage {
     }
 
     fn set_free_start(&mut self, num: PSize) {
+        println!("OFFSET_FREE_START={}", OFFSET_FREE_START);
         Self::write_le::<PSize, SIZE_FREE_START>(
             &mut self.buffer,
             OFFSET_FREE_START,
@@ -326,6 +375,7 @@ impl SlottedPage {
     }
 
     fn set_free_end(&mut self, num: PSize) {
+        println!("OFFSET_FREE_END={}", OFFSET_FREE_END);
         Self::write_le::<PSize, SIZE_FREE_END>(
             &mut self.buffer,
             OFFSET_FREE_END,
@@ -359,6 +409,7 @@ fn verify_available_space_empty_page() {
 #[test]
 fn verify_available_space_after_insertion() {
     let key = "abc";
+    let payload = "123";
     let mut new_inner = SlottedPage::new_inner();
     new_inner.add_key_ref(key, 123 as PageId);
     new_inner.add_key_ref(key, 123 as PageId);
@@ -366,6 +417,28 @@ fn verify_available_space_after_insertion() {
     let total_empty_size = PAGE_SIZE
         - (TOTAL_HEADER_SIZE as PSize
             + (2 * SIZE_OF_SLOT_TABLE_ITEM as PSize)
-            + (2 * SlottedPage::slot_size::<PageId>(key)));
+            + (2 * SlottedPage::slot_size::<&str>(key, payload)));
     assert_eq!(available_space, total_empty_size as PSize);
+}
+
+#[test]
+fn verify_read_the_inserted() {
+    let mut new_inner = SlottedPage::new_inner();
+    new_inner.add_key_ref("abcdefg", "123");
+    new_inner.add_key_ref("xyz", "234");
+    match new_inner.get_key_payload(0) {
+        Ok((key, payload)) => {
+            assert_eq!(key, "abcdefg");
+            assert_eq!(payload, "123");
+        }
+        Err(_) => assert!(false),
+    }
+
+    match new_inner.get_key_payload(1) {
+        Ok((key, payload)) => {
+            assert_eq!(key, "xyz");
+            assert_eq!(payload, "234");
+        }
+        Err(_) => assert!(false),
+    }
 }
