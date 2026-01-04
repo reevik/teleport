@@ -144,17 +144,12 @@ impl SlottedPage {
     }
 
     fn slot_size<T: PagePayload>(key: &str, payload: T) -> PSize {
-        (size_of::<PSize>()
-            + size_of::<PSize>()
-            + key.as_bytes().len()
-            + payload.to_le_bytes().len()) as PSize
+        (2 * size_of::<PSize>() + key.as_bytes().len() + payload.to_le_bytes().len()) as PSize
     }
 
     fn add_to_slot_table(&mut self, new_free_end: PSize) {
         let free_start = self.free_start();
         let new_free_end_offset = &new_free_end.to_le_bytes();
-        println!("free_start={}", free_start);
-        println!("new_free_end={}", new_free_end);
         self.buffer[free_start as usize..free_start as usize + SIZE_OF_SLOT_TABLE_ITEM]
             .copy_from_slice(new_free_end_offset);
         self.set_free_start(free_start + SIZE_OF_SLOT_TABLE_ITEM as PSize);
@@ -164,14 +159,11 @@ impl SlottedPage {
 
     fn get_key_payload(&self, index: PSize) -> Result<(String, String), Box<dyn Error>> {
         let offset_index = TOTAL_HEADER_SIZE + (index as usize * size_of::<PSize>());
-        println!("offset_index = {:?}", offset_index);
         let slot_offset = Self::read_le::<PSize, SIZE_OF_SLOT_TABLE_ITEM>(
             &self.buffer,
             offset_index,
             PSize::from_le_bytes,
         );
-        println!("slot_offset = {:?}", slot_offset);
-
         let payload_len = Self::read_le::<PSize, SIZE_OF_SLOT_TABLE_ITEM>(
             &self.buffer,
             slot_offset as usize,
@@ -361,7 +353,6 @@ impl SlottedPage {
     }
 
     fn set_free_start(&mut self, num: PSize) {
-        println!("OFFSET_FREE_START={}", OFFSET_FREE_START);
         Self::write_le::<PSize, SIZE_FREE_START>(
             &mut self.buffer,
             OFFSET_FREE_START,
@@ -375,7 +366,6 @@ impl SlottedPage {
     }
 
     fn set_free_end(&mut self, num: PSize) {
-        println!("OFFSET_FREE_END={}", OFFSET_FREE_END);
         Self::write_le::<PSize, SIZE_FREE_END>(
             &mut self.buffer,
             OFFSET_FREE_END,
@@ -386,7 +376,6 @@ impl SlottedPage {
 
     pub fn print(&self) {
         let content_as_lossy = String::from_utf8_lossy(&self.buffer);
-        println!("{}", content_as_lossy.to_string());
     }
 }
 
@@ -411,8 +400,8 @@ fn verify_available_space_after_insertion() {
     let key = "abc";
     let payload = "123";
     let mut new_inner = SlottedPage::new_inner();
-    new_inner.add_key_ref(key, 123 as PageId);
-    new_inner.add_key_ref(key, 123 as PageId);
+    new_inner.add_key_ref(key, payload);
+    new_inner.add_key_ref(key, payload);
     let available_space = new_inner.available_size();
     let total_empty_size = PAGE_SIZE
         - (TOTAL_HEADER_SIZE as PSize
