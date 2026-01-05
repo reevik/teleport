@@ -1,20 +1,75 @@
 use alloc::vec::Vec;
+use std::convert::TryInto;
 use std::error::Error;
 
 type PageId = u32;
 
 /// ***PSize*** is used to access the page regions, which is the offset type. Its size also
 /// limits the maximum page size.
-type PSize = u16;
+type o16 = OffsetType<u16>;
 
-enum PageError {
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+struct OffsetType<T>(pub T);
+
+impl<T> TryFrom<usize> for OffsetType<T>
+where
+    T: TryFrom<usize>,
+{
+    type Error = InvalidPageOffsetError;
+
+    fn try_from(value: usize) -> Result<Self, InvalidPageOffsetError> {
+        T::try_from(value)
+            .map(OffsetType)
+            .map_err(|_| InvalidPageOffsetError::OutOfRange)
+    }
+}
+
+impl<T> TryFrom<OffsetType<T>> for usize
+where
+    usize: TryFrom<T>,
+{
+    type Error = <usize as TryFrom<T>>::Error;
+
+    fn try_from(value: OffsetType<T>) -> Result<Self, Self::Error> {
+        usize::try_from(value.0)
+    }
+}
+
+trait ToLeBytes {
+    fn to_le_bytes_vec(&self) -> Vec<u8>;
+}
+
+impl ToLeBytes for u16 {
+    fn to_le_bytes_vec(&self) -> Vec<u8> {
+        self.to_le_bytes().to_vec()
+    }
+}
+
+impl ToLeBytes for u32 {
+    fn to_le_bytes_vec(&self) -> Vec<u8> {
+        self.to_le_bytes().to_vec()
+    }
+}
+
+impl<T> PagePayload for OffsetType<T>
+where
+    T: ToLeBytes,
+{
+    fn to_le_bytes(&self) -> Vec<u8> {
+        self.0.to_le_bytes_vec()
+    }
+}
+
+#[derive(Debug)]
+enum InvalidPageOffsetError {
     NoSpace,
+    OutOfRange,
 }
 // TODO this needs to be persisted in a configuration file.
 static mut NEXT_PAGE_ID: u32 = 0;
-const PAGE_SIZE: PSize = 4096;
+const PAGE_SIZE: o16 = OffsetType(4096u16);
 
-const SIZE_NUM_OF_SLOTS: usize = size_of::<PSize>();
+const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
 const SIZE_PAGE_ID: usize = size_of::<PageId>();
 const SIZE_PAGE_TYPE: usize = size_of::<u8>();
 const SIZE_FLAGS: usize = size_of::<u8>();
@@ -22,9 +77,9 @@ const SIZE_LEFT_MOST: usize = size_of::<PageId>();
 const SIZE_LEFT_SIBLING: usize = size_of::<PageId>();
 const SIZE_RIGHT_SIBLING: usize = size_of::<PageId>();
 const SIZE_PARENT_PAGE_ID: usize = size_of::<PageId>();
-const SIZE_FREE_START: usize = size_of::<PSize>();
-const SIZE_FREE_END: usize = size_of::<PSize>();
-const SIZE_OF_SLOT_TABLE_ITEM: usize = size_of::<PSize>();
+const SIZE_FREE_START: usize = size_of::<o16>();
+const SIZE_FREE_END: usize = size_of::<o16>();
+const SIZE_OF_SLOT_TABLE_ITEM: usize = size_of::<o16>();
 
 pub const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
     + SIZE_RIGHT_SIBLING
@@ -88,6 +143,7 @@ impl SlottedPage {
             buffer: [0u8; PAGE_SIZE as usize],
         };
 
+        let total : o16 = TOTAL_HEADER_SIZE.try_into().expect("TOTAL_HEADER_SIZE overflow");
         println!("TOTAL_HEADER_SIZE={}", TOTAL_HEADER_SIZE);
 
         new_instance.set_flags(0);
@@ -122,10 +178,14 @@ impl SlottedPage {
         self.set_left_most_page_id(left_most_page_id);
     }
 
-    fn add_key_ref<T: PagePayload>(&mut self, key: &str, payload: T) -> Result<(), PageError> {
+    fn add_key_ref<T: PagePayload>(
+        &mut self,
+        key: &str,
+        payload: T,
+    ) -> Result<(), InvalidPageOffsetError> {
         let key_in_bytes = key.as_bytes();
         let payload_in_bytes = payload.to_le_bytes();
-        let payload_len = payload_in_bytes.len() as PSize;
+        let payload_len: o16 = payload_in_bytes.len().try_into()?;
         let mut slot: Vec<u8> = Vec::with_capacity(Self::slot_size::<T>(key, payload) as usize);
 
         slot.extend_from_slice(&payload_len.to_le_bytes());
@@ -135,7 +195,7 @@ impl SlottedPage {
 
         let required_space = slot.len() + SIZE_OF_SLOT_TABLE_ITEM;
         if self.available_size() < required_space as PSize {
-            return Err(PageError::NoSpace);
+            return Err(InvalidPageOffsetError::NoSpace);
         }
         let new_free_end = self.add_slot(&mut slot);
         // advance the free start and slot table with the new free end.
