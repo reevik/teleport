@@ -1,13 +1,13 @@
 use crate::errors::InvalidPageOffsetError;
-use crate::types::{FromLeBytes, OffsetType, PagePayload, ToLeBytes, o16};
+use crate::types::{FromLeBytes, PagePayload, ToLeBytes, o16};
 use alloc::vec::Vec;
 use std::convert::TryInto;
 use std::error::Error;
 
-const ZERO: o16 = OffsetType(0);
+const ZERO: o16 = o16(0);
 
 // TODO this needs to be persisted in a configuration file.
-static mut NEXT_PAGE_ID: o16 = OffsetType(0u16);
+static mut NEXT_PAGE_ID: o16 = o16(0);
 const PAGE_SIZE: o16 = o16(4096);
 const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
 
@@ -81,7 +81,7 @@ impl SlottedPage {
         new_instance.set_page_type(0);
         unsafe {
             new_instance.set_page_id(NEXT_PAGE_ID);
-            NEXT_PAGE_ID = OffsetType(NEXT_PAGE_ID.0 + 1);
+            NEXT_PAGE_ID = o16(NEXT_PAGE_ID.0 + 1);
         }
         new_instance
     }
@@ -400,7 +400,7 @@ fn verify_read_the_inserted() {
         Err(_) => assert!(false),
     }
 
-    match new_inner.get_key_payload(OffsetType(1)) {
+    match new_inner.get_key_payload(o16(1)) {
         Ok((key, payload)) => {
             assert_eq!(key, "xyz");
             assert_eq!(payload, "234");

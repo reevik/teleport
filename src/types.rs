@@ -1,6 +1,6 @@
 use std::ops::{Add, Sub};
 
-pub type o16 = OffsetType<u16>;
+pub(crate) type o16 = OffsetType<u16>;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd)]
 pub struct OffsetType<T>(pub T);
