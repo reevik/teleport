@@ -1,6 +1,8 @@
 extern crate alloc;
 
 mod paging;
+mod types;
+mod errors;
 
 fn main() {
     println!("Hello, world!");

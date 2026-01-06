@@ -2,9 +2,11 @@
 name = "teleport"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
 
 [profile.dev]
 opt-level = 0
 debug = true
 
 [dependencies]
+errors = "0.1.0"
