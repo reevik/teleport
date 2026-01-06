@@ -3,5 +3,14 @@
 version = 4
 
 [[package]]
+name = "errors"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8d4e67af827b736a7f90b55da24181f4d504c302a352918b65c36e6b0fdcc89"
+
+[[package]]
 name = "teleport"
 version = "0.1.0"
+dependencies = [
+ "errors",
+]

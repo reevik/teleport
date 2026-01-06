@@ -1,136 +1,14 @@
+use crate::errors::InvalidPageOffsetError;
+use crate::types::{FromLeBytes, OffsetType, PagePayload, ToLeBytes, o16};
 use alloc::vec::Vec;
 use std::convert::TryInto;
 use std::error::Error;
-use std::ops::{Add, Sub};
-
-type o16 = OffsetType<u16>;
 
 const ZERO: o16 = OffsetType(0);
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd)]
-struct OffsetType<T>(pub T);
-
-impl OffsetType<u16> {
-    fn of(value: i32) -> Self {
-        OffsetType(value.try_into().unwrap())
-    }
-}
-
-impl<T> TryFrom<usize> for OffsetType<T>
-where
-    T: TryFrom<usize>,
-{
-    type Error = InvalidPageOffsetError;
-
-    fn try_from(value: usize) -> Result<Self, InvalidPageOffsetError> {
-        T::try_from(value)
-            .map(OffsetType)
-            .map_err(|_| InvalidPageOffsetError::OutOfRange)
-    }
-}
-
-impl<T> TryFrom<OffsetType<T>> for usize
-where
-    usize: TryFrom<T>,
-{
-    type Error = <usize as TryFrom<T>>::Error;
-
-    fn try_from(value: OffsetType<T>) -> Result<Self, Self::Error> {
-        usize::try_from(value.0)
-    }
-}
-
-trait ToLeBytes {
-    fn to_le_bytes_vec(&self) -> Vec<u8>;
-}
-
-impl ToLeBytes for u16 {
-    fn to_le_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-
-impl ToLeBytes for u32 {
-    fn to_le_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-
-impl ToLeBytes for o16 {
-    fn to_le_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-
-trait FromLeBytes {
-    fn from_bytes(bytes: Vec<u8>) -> Self;
-}
-
-impl FromLeBytes for o16 {
-    fn from_bytes(bytes: Vec<u8>) -> o16 {
-        OffsetType(u16::from_le_bytes(bytes.try_into().unwrap()))
-    }
-}
-
-impl FromLeBytes for u32 {
-    fn from_bytes(bytes: Vec<u8>) -> u32 {
-        u32::from_le_bytes(bytes.try_into().unwrap())
-    }
-}
-
-impl FromLeBytes for u8 {
-    fn from_bytes(bytes: Vec<u8>) -> u8 {
-        u8::from_le_bytes(bytes.try_into().unwrap())
-    }
-}
-
-impl<T> Sub for OffsetType<T>
-where
-    T: Sub<Output = T>,
-{
-    type Output = OffsetType<T>;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        OffsetType(self.0 - rhs.0)
-    }
-}
-
-impl<T> Add for OffsetType<T>
-where
-    T: Add<Output = T>,
-{
-    type Output = OffsetType<T>;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        OffsetType(self.0 + rhs.0)
-    }
-}
-
-impl Add<i32> for o16 {
-    type Output = o16;
-
-    fn add(self, rhs: i32) -> Self::Output {
-        let right_value: u16 = rhs.try_into().expect("overflow");
-        OffsetType::<u16>(self.0 + right_value)
-    }
-}
-
-impl<T> PagePayload for OffsetType<T>
-where
-    T: ToLeBytes,
-{
-    fn to_le_bytes(&self) -> Vec<u8> {
-        self.0.to_le_bytes_vec()
-    }
-}
-
-#[derive(Debug)]
-enum InvalidPageOffsetError {
-    OutOfRange,
-}
 // TODO this needs to be persisted in a configuration file.
 static mut NEXT_PAGE_ID: o16 = OffsetType(0u16);
-const PAGE_SIZE: o16 = OffsetType(4096u16);
+const PAGE_SIZE: o16 = o16(4096);
 const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
 
 const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
@@ -170,16 +48,6 @@ const OFFSET_FREE_END: usize = OFFSET_FREE_START + SIZE_FREE_START;
 
 pub struct SlottedPage {
     buffer: [u8; PAGE_SIZE_USIZE],
-}
-
-trait PagePayload {
-    fn to_le_bytes(&self) -> Vec<u8>;
-}
-
-impl PagePayload for &str {
-    fn to_le_bytes(&self) -> Vec<u8> {
-        self.as_bytes().iter().map(|&b| b).collect()
-    }
 }
 
 enum PageType {
@@ -486,9 +354,9 @@ impl SlottedPage {
 #[test]
 fn test_add_slot_results_in_correct_num_of_slots() {
     let mut new_inner = SlottedPage::new_inner();
-    new_inner.add_key_ref("abc", OffsetType::of(123));
-    new_inner.add_key_ref("xyz", OffsetType::of(789));
-    assert_eq!(new_inner.num_of_slots(), OffsetType::of(2));
+    let _ = new_inner.add_key_ref("abc", o16(123));
+    let _ = new_inner.add_key_ref("xyz", o16(789));
+    assert_eq!(new_inner.num_of_slots(), o16(2));
 }
 
 #[test]
@@ -522,9 +390,9 @@ fn verify_available_space_after_insertion() {
 #[test]
 fn verify_read_the_inserted() {
     let mut new_inner = SlottedPage::new_inner();
-    new_inner.add_key_ref("abcdefg", "123");
-    new_inner.add_key_ref("xyz", "234");
-    match new_inner.get_key_payload(OffsetType::of(0)) {
+    let _ = new_inner.add_key_ref("abcdefg", "123");
+    let _ = new_inner.add_key_ref("xyz", "234");
+    match new_inner.get_key_payload(o16(0)) {
         Ok((key, payload)) => {
             assert_eq!(key, "abcdefg");
             assert_eq!(payload, "123");
