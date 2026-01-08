@@ -2,8 +2,21 @@ use std::ops::{Add, Sub};
 
 pub(crate) type o16 = OffsetType<u16>;
 
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
+pub(crate) struct Key<T>(pub T);
+impl<T: Ord> Key<T> {}
+
+impl<T> PagePayload for Key<T>
+where
+    T: Ord + ToLeBytes,
+{
+    fn to_le_bytes(&self) -> Vec<u8> {
+        self.0.to_le_bytes_vec()
+    }
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd)]
-pub struct OffsetType<T>(pub T);
+pub(crate) struct OffsetType<T>(pub T);
 
 impl OffsetType<u16> {
     fn of(value: i32) -> o16 {
@@ -11,7 +24,7 @@ impl OffsetType<u16> {
     }
 }
 
-pub const fn o16(value: u16) -> o16 {
+pub(crate) const fn o16(value: u16) -> o16 {
     OffsetType(value)
 }
 
@@ -89,8 +102,14 @@ impl PagePayload for &str {
     }
 }
 
-pub (crate) trait ToLeBytes {
+pub(crate) trait ToLeBytes {
     fn to_le_bytes_vec(&self) -> Vec<u8>;
+}
+
+impl ToLeBytes for &str {
+    fn to_le_bytes_vec(&self) -> Vec<u8> {
+        self.to_le_bytes().to_vec()
+    }
 }
 
 impl ToLeBytes for u16 {
