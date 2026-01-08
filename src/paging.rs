@@ -1,12 +1,10 @@
 use crate::errors::InvalidPageOffsetError;
-use crate::types::{FromLeBytes, PagePayload, ToLeBytes, o16};
+use crate::types::{o16, FromLeBytes, Key, PagePayload, ToLeBytes};
 use alloc::vec::Vec;
 use std::convert::TryInto;
 use std::error::Error;
 
 const ZERO: o16 = o16(0);
-
-// TODO this needs to be persisted in a configuration file.
 static mut NEXT_PAGE_ID: o16 = o16(0);
 const PAGE_SIZE: o16 = o16(4096);
 const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
@@ -102,21 +100,21 @@ impl SlottedPage {
         self.set_left_most_page_id(left_most_page_id);
     }
 
-    fn add_key_ref<T: PagePayload>(
+    fn add_key_ref<T: PagePayload, R: Ord + ToLeBytes>(
         &mut self,
-        key: &str,
+        key: Key<R>,
         payload: T,
     ) -> Result<(), InvalidPageOffsetError> {
-        let key_in_bytes = key.as_bytes();
+        let key_in_bytes = key.to_le_bytes();
         let payload_in_bytes = payload.to_le_bytes();
         let payload_len: o16 = payload_in_bytes.len().try_into()?;
         let key_in_bytes_len: o16 = key_in_bytes.len().try_into()?;
         let mut slot: Vec<u8> =
-            Vec::with_capacity(Self::slot_size::<T>(key, payload).try_into().expect(""));
+            Vec::with_capacity(Self::slot_size::<T, R>(key, payload).try_into().expect(""));
 
         slot.extend_from_slice(&payload_len.to_le_bytes());
         slot.extend_from_slice(&key_in_bytes_len.to_le_bytes());
-        slot.extend_from_slice(key_in_bytes);
+        slot.extend_from_slice(key_in_bytes.as_slice());
         slot.extend_from_slice(&payload_in_bytes);
 
         let required_space = slot.len() + SIZE_OF_SLOT_TABLE_ITEM;
@@ -129,8 +127,8 @@ impl SlottedPage {
         Ok(())
     }
 
-    fn slot_size<T: PagePayload>(key: &str, payload: T) -> o16 {
-        (2 * size_of::<o16>() + key.as_bytes().len() + payload.to_le_bytes().len())
+    fn slot_size<T: PagePayload, E: Ord + ToLeBytes>(key: Key<E>, payload: T) -> o16 {
+        (2 * size_of::<o16>() + key.to_le_bytes().len() + payload.to_le_bytes().len())
             .try_into()
             .expect("Too many pages")
     }
@@ -354,8 +352,8 @@ impl SlottedPage {
 #[test]
 fn test_add_slot_results_in_correct_num_of_slots() {
     let mut new_inner = SlottedPage::new_inner();
-    let _ = new_inner.add_key_ref("abc", o16(123));
-    let _ = new_inner.add_key_ref("xyz", o16(789));
+    let _ = new_inner.add_key_ref(Key("abc"), o16(123));
+    let _ = new_inner.add_key_ref(Key("xyz"), o16(789));
     assert_eq!(new_inner.num_of_slots(), o16(2));
 }
 
@@ -369,16 +367,17 @@ fn verify_available_space_empty_page() {
 
 #[test]
 fn verify_available_space_after_insertion() {
-    let key = "abc";
+    let key1 = Key("abc");
+    let key2 = Key("abc");
     let payload = "123";
     let mut new_inner = SlottedPage::new_inner();
-    new_inner.add_key_ref(key, payload);
-    new_inner.add_key_ref(key, payload);
+    let _ = new_inner.add_key_ref(key1.clone(), payload);
+    let _ = new_inner.add_key_ref(key2, payload);
     let available_space: usize = new_inner
         .available_size()
         .try_into()
         .expect("too large page size");
-    let slot_size: usize = SlottedPage::slot_size::<&str>(key, payload)
+    let slot_size: usize = SlottedPage::slot_size::<&str, &str>(key1, payload)
         .try_into()
         .expect("too large page size");
     let page_size: usize = PAGE_SIZE.try_into().expect("too large page size");
@@ -390,8 +389,8 @@ fn verify_available_space_after_insertion() {
 #[test]
 fn verify_read_the_inserted() {
     let mut new_inner = SlottedPage::new_inner();
-    let _ = new_inner.add_key_ref("abcdefg", "123");
-    let _ = new_inner.add_key_ref("xyz", "234");
+    let _ = new_inner.add_key_ref(Key("abcdefg"), "123");
+    let _ = new_inner.add_key_ref(Key("xyz"), "234");
     match new_inner.get_key_payload(o16(0)) {
         Ok((key, payload)) => {
             assert_eq!(key, "abcdefg");
