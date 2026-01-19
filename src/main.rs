@@ -6,5 +6,5 @@ mod errors;
 
 fn main() {
     println!("Hello, world!");
-    let page = paging::SlottedPage::new_inner();
+    let page = paging::Page::new_inner();
 }

@@ -10,3 +10,4 @@ debug = true
 
 [dependencies]
 errors = "0.1.0"
+rand = "0.8"

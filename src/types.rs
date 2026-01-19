@@ -1,3 +1,5 @@
+use std::cmp::min;
+use std::io::Read;
 use std::ops::{Add, Sub};
 
 pub(crate) type o16 = OffsetType<u16>;
@@ -12,6 +14,10 @@ where
 {
     fn to_le_bytes(&self) -> Vec<u8> {
         self.0.to_le_bytes_vec()
+    }
+
+    fn len(&self) -> usize {
+        self.to_le_bytes().len()
     }
 }
 
@@ -90,15 +96,24 @@ where
     fn to_le_bytes(&self) -> Vec<u8> {
         self.0.to_le_bytes_vec()
     }
+
+    fn len(&self) -> usize {
+        self.to_le_bytes().len()
+    }
 }
 
 pub(crate) trait PagePayload {
     fn to_le_bytes(&self) -> Vec<u8>;
+    fn len(&self) -> usize;
 }
 
 impl PagePayload for &str {
     fn to_le_bytes(&self) -> Vec<u8> {
         self.as_bytes().iter().map(|&b| b).collect()
+    }
+
+    fn len(&self) -> usize {
+        self.to_le_bytes().len()
     }
 }
 
@@ -149,5 +164,86 @@ impl FromLeBytes for u32 {
 impl FromLeBytes for u8 {
     fn from_bytes(bytes: Vec<u8>) -> u8 {
         u8::from_le_bytes(bytes.try_into().unwrap())
+    }
+}
+
+//////////////////////////
+#[repr(u8)]
+#[derive(Clone, Debug)]
+pub(crate) enum PayloadType {
+    Str = 1,
+    U32 = 2,
+    U16 = 3,
+    I64 = 4,
+    U8 = 5,
+}
+
+/// Payload type: String.
+#[derive(Clone, Debug)]
+pub(crate) struct Payload {
+    buffer: Vec<u8>,
+    cursor_pos: usize,
+    payload_type: PayloadType,
+}
+
+impl Payload {
+    /// Converts a String object into a Payload instance.
+    pub(crate) fn from_str(payload: String) -> Self {
+        Payload {
+            buffer: payload.into_bytes(),
+            cursor_pos: 0,
+            payload_type: PayloadType::Str,
+        }
+    }
+
+    /// Converts a u32 integer into a Payload instance.
+    pub(crate) fn from_u32(payload: u32) -> Self {
+        Payload {
+            buffer: payload.to_le_bytes().to_vec(),
+            cursor_pos: 0,
+            payload_type: PayloadType::U32,
+        }
+    }
+
+    /// Converts a u16 integer into a Payload instance.
+    pub(crate) fn from_u16(payload: u16) -> Self {
+        Payload {
+            buffer: payload.to_le_bytes().to_vec(),
+            cursor_pos: 0,
+            payload_type: PayloadType::U16,
+        }
+    }
+
+    /// Converts a i64 integer into a Payload instance.
+    pub(crate) fn from_i64(payload: i64) -> Self {
+        Payload {
+            buffer: payload.to_le_bytes().to_vec(),
+            cursor_pos: 0,
+            payload_type: PayloadType::I64,
+        }
+    }
+
+    pub(crate) fn from_buffer(buffer: &[u8], payload_type: PayloadType) -> Self {
+        Payload {
+            buffer: buffer.to_vec(),
+            cursor_pos: 0,
+            payload_type,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.buffer.len()
+    }
+}
+
+impl Read for Payload {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let available = min(buf.len(), self.buffer.len() - self.cursor_pos);
+        if available == 0 {
+            return Ok(self.cursor_pos);
+        }
+        buf.copy_from_slice(&self.buffer[self.cursor_pos..self.cursor_pos + available]);
+        self.cursor_pos += buf.len();
+        Ok(self.cursor_pos)
     }
 }
