@@ -2,6 +2,7 @@ use std::cmp::min;
 use std::io::Read;
 use std::ops::{Add, Sub};
 
+
 pub(crate) type o16 = OffsetType<u16>;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
@@ -21,7 +22,7 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Hash, Ord)]
 pub(crate) struct OffsetType<T>(pub T);
 
 impl OffsetType<u16> {

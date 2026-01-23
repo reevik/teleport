@@ -102,7 +102,7 @@ impl Page {
         let current_page_id = parent_page.page_id();
         cache.insert(current_page_id, parent_page);
         let mut current_page = cache.get_mut(&current_page_id).expect("");
-        let mut residual = current_page.add_key_data(key, payload, false).expect("");
+        let mut residual = current_page.add_key_data(key, payload).expect("");
         let mut prev_page_id = current_page_id;
         while residual.len() > 0 {
             let mut overflow_page = Self::new(DATA_PAGE);
@@ -129,7 +129,7 @@ impl Page {
         key: Key<R>,
         payload: Payload,
     ) -> Result<(), InvalidPageOffsetError> {
-        match self.add_key_data(key, payload, true) {
+        match self.add_key_data(key, payload) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
@@ -138,35 +138,33 @@ impl Page {
     fn add_key_data<R: Ord + ToLeBytes>(
         &mut self,
         key: Key<R>,
-        mut payload: Payload,
-        must_fit: bool,
+        mut payload: Payload
     ) -> Result<Payload, InvalidPageOffsetError> {
-        let mut payload_in_bytes = vec![0; payload.len()];
-        let key_in_bytes = key.to_le_bytes();
-        payload.read(&mut payload_in_bytes);
-        let payload_len: o16 = payload_in_bytes.len().try_into()?;
-        let key_in_bytes_len: o16 = key_in_bytes.len().try_into()?;
-        let available_size: o16 = self.available_size();
-        let payload_size: usize = self
-            .payload_size(key_in_bytes_len, payload_len)
-            .try_into()
-            .expect("");
-        let payload_buf: Vec<u8> = payload_in_bytes.drain(0..payload_size).collect();
+        // determine the payload and key size.
+        let key_buf = key.to_le_bytes();
+        let key_buf_size = key_buf.len();
+        let payload_size = payload.len();
+        // each for payload and key size plus the slot table entry (offset) hence three.
+        let header_size = 3 * SIZE_OFFSET;
+        // we store key and payload size to determine the offsets. How much space would this data take in buffer?
+        let payload_size_in_page:o16 = payload_size.try_into().expect("");
+        let key_size_in_page:o16 = key_buf_size.try_into().expect("");
+        let metadata_length = payload_size_in_page.to_le_bytes().len() + key_size_in_page.to_le_bytes().len() + header_size;
+        let free_space:usize = self.free_size().try_into().expect("");
+        let available_net_free_space = free_space - metadata_length;
+        // consume the payload for available net space or payload size if it is smaller than available net space.
+        let mut read_buf = vec![0; min(available_net_free_space, payload_size)];
+        let _ = payload.read(&mut read_buf);
         let mut slot: Vec<u8> = Vec::with_capacity(
-            Self::slot_size(key_in_bytes.len(), payload_buf.len())
+            Self::slot_size(key_buf_size, payload_size)
                 .try_into()
                 .expect(""),
         );
+        slot.extend_from_slice(&payload_size.to_le_bytes());
+        slot.extend_from_slice(&key_buf_size.to_le_bytes());
+        slot.extend_from_slice(key_buf.as_slice());
+        slot.extend_from_slice(&read_buf);
 
-        slot.extend_from_slice(&payload_len.to_le_bytes());
-        slot.extend_from_slice(&key_in_bytes_len.to_le_bytes());
-        slot.extend_from_slice(key_in_bytes.as_slice());
-        slot.extend_from_slice(&payload_buf);
-
-        let required_space = slot.len() + SIZE_OF_SLOT_TABLE_ITEM;
-        if must_fit && available_size < required_space.try_into().expect("Too many pages") {
-            return Err(InvalidPageOffsetError::OutOfRange);
-        }
         let new_free_end = self.add_slot(&mut slot);
         // advance the free start and slot table with the new free end.
         self.add_to_slot_table(new_free_end);
@@ -177,7 +175,6 @@ impl Page {
         &mut self,
         mut payload: Payload,
     ) -> Result<Payload, InvalidPageOffsetError> {
-
         let max_available_payload_size: usize = self
             .max_available_payload_size_in_overflow_page()
             .try_into()
@@ -195,12 +192,12 @@ impl Page {
     }
 
     fn max_available_payload_size_in_overflow_page(&self) -> o16 {
-        self.available_size() - SIZE_OF_SLOT_TABLE_ITEM.try_into().expect("Too many pages")
+        self.free_size() - SIZE_OF_SLOT_TABLE_ITEM.try_into().expect("Too many pages")
     }
 
     fn payload_size(&self, key_len: o16, payload_len: o16) -> o16 {
         let available_size_in_page: usize =
-            self.available_size().try_into().expect("Too many pages");
+            self.free_size().try_into().expect("Too many pages");
         let key_size: usize = key_len.try_into().expect("");
         let slot_header_size = 2 * SIZE_OFFSET;
         let metadata_len: usize = SIZE_OF_SLOT_TABLE_ITEM + slot_header_size + key_size;
@@ -217,13 +214,16 @@ impl Page {
             .expect("Too many pages")
     }
 
+    // new_free_end is the new position of the free_end after inserting a new slot at the end of the
+    // page. The slots make the page grow backward:
+    // | Page Header | slot table | ... free space ... | new slot | prev slot | .. |
     fn add_to_slot_table(&mut self, new_free_end: o16) {
         let free_start = self.free_start();
         let new_free_end_offset = &new_free_end.to_le_bytes();
+        // Register the start offset of the last slot in the slot table.
         let start: usize = free_start.try_into().expect("");
         let end: usize = start + SIZE_OF_SLOT_TABLE_ITEM;
         self.buffer[start..end].copy_from_slice(new_free_end_offset);
-
         let size_of_slot_table_item: o16 = SIZE_OF_SLOT_TABLE_ITEM.try_into().expect("");
         self.set_free_start(free_start + size_of_slot_table_item);
         self.set_num_of_slots(self.num_of_slots() + 1);
@@ -284,7 +284,7 @@ impl Page {
         new_free_end
     }
 
-    pub(crate) fn available_size(&self) -> o16 {
+    pub(crate) fn free_size(&self) -> o16 {
         self.free_end() - self.free_start()
     }
 
@@ -426,10 +426,6 @@ impl Page {
             value.to_le_bytes_vec()
         });
     }
-
-    pub fn print(&self) {
-        let content_as_lossy = String::from_utf8_lossy(&self.buffer);
-    }
 }
 
 #[test]
@@ -445,7 +441,7 @@ fn test_add_slot_results_in_correct_num_of_slots() {
 #[test]
 fn verify_available_space_empty_page() {
     let mut new_inner = Page::new_inner();
-    let available_space = new_inner.available_size();
+    let available_space = new_inner.free_size();
     let total_empty_size = PAGE_SIZE - TOTAL_HEADER_SIZE.try_into().expect("too large page size");
     assert_eq!(available_space, total_empty_size);
 }
@@ -460,7 +456,7 @@ fn verify_available_space_after_insertion() {
     let _ = new_inner.add_key_ref(key1.clone(), payload.clone());
     let _ = new_inner.add_key_ref(key2, payload);
     let available_space: usize = new_inner
-        .available_size()
+        .free_size()
         .try_into()
         .expect("too large page size");
     let slot_size: usize = Page::slot_size(key1.len(), payload_len)
@@ -498,8 +494,12 @@ fn verify_read_the_inserted() {
 
 #[test]
 fn verify_add_data_node() {
-    let string = random_string(PAGE_SIZE.try_into().expect("too large page size"));
-    let mut data_node = Page::new_leaf(Key("foo"), Payload::from_str(string));
+    let page_size: usize = PAGE_SIZE.try_into().expect("too large page size");
+    let string = random_string(page_size * 2);
+    let data_node = Page::new_leaf(Key("foo"), Payload::from_str(string));
+    let mut cache = CACHE.lock().unwrap();
+    let leading_page = cache.get_mut(&data_node).expect("");
+    assert_eq!(cache.len(), 2)
 }
 
 fn random_string(len: usize) -> String {
