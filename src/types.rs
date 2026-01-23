@@ -21,7 +21,7 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Hash)]
 pub(crate) struct OffsetType<T>(pub T);
 
 impl OffsetType<u16> {
@@ -232,7 +232,7 @@ impl Payload {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.buffer.len()
+        self.buffer.len() - self.cursor_pos
     }
 }
 

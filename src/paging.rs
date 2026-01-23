@@ -1,10 +1,16 @@
 use crate::errors::InvalidPageOffsetError;
 use crate::types::{o16, FromLeBytes, Key, PagePayload, Payload, ToLeBytes};
 use alloc::vec::Vec;
+use std::cmp::min;
+use once_cell::sync::Lazy;
 use rand::Rng;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
 use std::io::Read;
+use std::sync::Mutex;
+
+static CACHE: Lazy<Mutex<HashMap<o16, Page>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 const ZERO: o16 = o16(0);
 static mut NEXT_PAGE_ID: o16 = o16(0);
@@ -90,28 +96,24 @@ impl Page {
         new_instance
     }
 
-    pub fn new_leaf<R: Ord + ToLeBytes>(key: Key<R>, payload: Payload) -> Self {
-        let mut initial_page = Self::new(DATA_PAGE);
-        let mut current_page_ref = &mut initial_page;
-        let residual = match current_page_ref.add_key_data(key, payload, false) {
-            Ok(residual) => residual,
-            Err(_) => return initial_page,
-        };
-
-        let mut residual = residual;
+    pub fn new_leaf<R: Ord + ToLeBytes>(key: Key<R>, payload: Payload) -> o16 {
+        let mut cache = CACHE.lock().unwrap();
+        let mut parent_page = Self::new(DATA_PAGE);
+        let current_page_id = parent_page.page_id();
+        cache.insert(current_page_id, parent_page);
+        let mut current_page = cache.get_mut(&current_page_id).expect("");
+        let mut residual = current_page.add_key_data(key, payload, false).expect("");
+        let mut prev_page_id = current_page_id;
         while residual.len() > 0 {
             let mut overflow_page = Self::new(DATA_PAGE);
             let overflow_page_id = overflow_page.page_id();
-            match overflow_page.add_overflow_data(residual) {
-                Ok(next_residual) => {
-                    residual = next_residual;
-                    current_page_ref.set_right_sibling(overflow_page_id);
-                    current_page_ref = &mut overflow_page;
-                }
-                Err(_) => return overflow_page,
-            }
+            residual = overflow_page.add_overflow_data(residual).expect("");
+            cache.insert(overflow_page_id, overflow_page);
+            let prev_page = cache.get_mut(&prev_page_id).expect("");
+            prev_page.set_right_sibling(overflow_page_id);
+            prev_page_id = overflow_page_id;
         }
-        initial_page
+        current_page_id
     }
 
     pub fn new_inner() -> Self {
@@ -175,18 +177,17 @@ impl Page {
         &mut self,
         mut payload: Payload,
     ) -> Result<Payload, InvalidPageOffsetError> {
+
         let max_available_payload_size: usize = self
             .max_available_payload_size_in_overflow_page()
             .try_into()
             .expect("Too many pages");
-        let mut payload_in_bytes: Vec<u8> = vec![0; max_available_payload_size];
+        let copy_size = min(payload.len(), max_available_payload_size);
+        let mut payload_in_bytes: Vec<u8> = vec![0; copy_size];
         let _ = payload.read(&mut payload_in_bytes);
-        let head: Vec<u8> = payload_in_bytes
-            .drain(0..max_available_payload_size)
-            .collect();
-        let mut slot: Vec<u8> = Vec::with_capacity(max_available_payload_size);
-        slot.extend_from_slice(&head.len().to_le_bytes());
-        slot.extend_from_slice(&head);
+        let mut slot: Vec<u8> = Vec::with_capacity(copy_size);
+        slot.extend_from_slice(&copy_size.to_le_bytes());
+        slot.extend_from_slice(&payload_in_bytes);
         let new_free_end = self.add_slot(&mut slot);
         // advance the free start and slot table with the new free end.
         self.add_to_slot_table(new_free_end);
@@ -498,7 +499,7 @@ fn verify_read_the_inserted() {
 #[test]
 fn verify_add_data_node() {
     let string = random_string(PAGE_SIZE.try_into().expect("too large page size"));
-    let mut data_node = Page::new_leaf(Key("foo"), string.as_str());
+    let mut data_node = Page::new_leaf(Key("foo"), Payload::from_str(string));
 }
 
 fn random_string(len: usize) -> String {
