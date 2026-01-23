@@ -1,9 +1,9 @@
 use crate::errors::InvalidPageOffsetError;
 use crate::types::{o16, FromLeBytes, Key, PagePayload, Payload, ToLeBytes};
 use alloc::vec::Vec;
-use std::cmp::min;
 use once_cell::sync::Lazy;
 use rand::Rng;
+use std::cmp::min;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
@@ -138,7 +138,7 @@ impl Page {
     fn add_key_data<R: Ord + ToLeBytes>(
         &mut self,
         key: Key<R>,
-        mut payload: Payload
+        mut payload: Payload,
     ) -> Result<Payload, InvalidPageOffsetError> {
         // determine the payload and key size.
         let key_buf = key.to_le_bytes();
@@ -146,12 +146,8 @@ impl Page {
         let payload_size = payload.len();
         // each for payload and key size plus the slot table entry (offset) hence three.
         let header_size = 3 * SIZE_OFFSET;
-        // we store key and payload size to determine the offsets. How much space would this data take in buffer?
-        let payload_size_in_page:o16 = payload_size.try_into().expect("");
-        let key_size_in_page:o16 = key_buf_size.try_into().expect("");
-        let metadata_length = payload_size_in_page.to_le_bytes().len() + key_size_in_page.to_le_bytes().len() + header_size;
-        let free_space:usize = self.free_size().try_into().expect("");
-        let available_net_free_space = free_space - metadata_length;
+        let free_space: usize = self.free_size().try_into().expect("");
+        let available_net_free_space = free_space - header_size - key_buf_size;
         // consume the payload for available net space or payload size if it is smaller than available net space.
         let mut read_buf = vec![0; min(available_net_free_space, payload_size)];
         let _ = payload.read(&mut read_buf);
@@ -160,8 +156,10 @@ impl Page {
                 .try_into()
                 .expect(""),
         );
-        slot.extend_from_slice(&payload_size.to_le_bytes());
-        slot.extend_from_slice(&key_buf_size.to_le_bytes());
+        let payload_size_in_o16: o16 = payload_size.try_into().expect("");
+        let key_buf_size_in_o16: o16 = key_buf_size.try_into().expect("");
+        slot.extend_from_slice(&payload_size_in_o16.to_le_bytes());
+        slot.extend_from_slice(&key_buf_size_in_o16.to_le_bytes());
         slot.extend_from_slice(key_buf.as_slice());
         slot.extend_from_slice(&read_buf);
 
@@ -193,19 +191,6 @@ impl Page {
 
     fn max_available_payload_size_in_overflow_page(&self) -> o16 {
         self.free_size() - SIZE_OF_SLOT_TABLE_ITEM.try_into().expect("Too many pages")
-    }
-
-    fn payload_size(&self, key_len: o16, payload_len: o16) -> o16 {
-        let available_size_in_page: usize =
-            self.free_size().try_into().expect("Too many pages");
-        let key_size: usize = key_len.try_into().expect("");
-        let slot_header_size = 2 * SIZE_OFFSET;
-        let metadata_len: usize = SIZE_OF_SLOT_TABLE_ITEM + slot_header_size + key_size;
-        let available_payload_size: usize = available_size_in_page - metadata_len;
-        if payload_len > available_payload_size.try_into().expect("Too many pages") {
-            return available_payload_size.try_into().expect("Too many pages");
-        }
-        payload_len.try_into().expect("Too many pages")
     }
 
     fn slot_size(key_len: usize, payload_len: usize) -> o16 {
@@ -497,9 +482,12 @@ fn verify_add_data_node() {
     let page_size: usize = PAGE_SIZE.try_into().expect("too large page size");
     let string = random_string(page_size * 2);
     let data_node = Page::new_leaf(Key("foo"), Payload::from_str(string));
-    let mut cache = CACHE.lock().unwrap();
-    let leading_page = cache.get_mut(&data_node).expect("");
-    assert_eq!(cache.len(), 2)
+    let cache = CACHE.lock().unwrap();
+    let leading_page = cache.get(&data_node).expect("");
+    assert_eq!(cache.len(), 3);
+    assert_eq!(leading_page.free_end(), leading_page.free_start());
+    let overflow1 = cache.get(&leading_page.page_id()).expect("");
+    assert_eq!(overflow1.free_start(), overflow1.free_end());
 }
 
 fn random_string(len: usize) -> String {
