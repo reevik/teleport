@@ -3,8 +3,6 @@ use std::cmp::min;
 use std::io::Read;
 use std::ops::{Add, Sub};
 
-pub(crate) type o16 = OffsetType<u16>;
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Hash, Ord)]
 pub(crate) struct OffsetType<T>(pub T);
 
@@ -14,6 +12,10 @@ impl OffsetType<u16> {
     }
 }
 
+/// o16 is a type alias representing the offset type in a page.
+pub(crate) type o16 = OffsetType<u16>;
+
+// A convenience function to create o16 types from u16.
 pub(crate) const fn o16(value: u16) -> o16 {
     OffsetType(value)
 }
@@ -41,6 +43,7 @@ where
         usize::try_from(value.0)
     }
 }
+
 
 impl<T> Sub for OffsetType<T>
 where
@@ -73,62 +76,31 @@ impl Add<i32> for o16 {
     }
 }
 
-impl<T> PagePayload for OffsetType<T>
-where
-    T: ToLeBytes,
-{
-    fn to_le_bytes(&self) -> Vec<u8> {
-        self.0.to_le_bytes_vec()
-    }
 
-    fn len(&self) -> usize {
-        self.to_le_bytes().len()
-    }
-}
-
-pub(crate) trait PagePayload {
-    fn to_le_bytes(&self) -> Vec<u8>;
-    fn len(&self) -> usize;
-}
-
-impl PagePayload for &str {
-    fn to_le_bytes(&self) -> Vec<u8> {
-        self.as_bytes().iter().map(|&b| b).collect()
-    }
-
-    fn len(&self) -> usize {
-        self.to_le_bytes().len()
-    }
-}
-
+////////////////////////////////////////////////////////////////////////////////////////////////////
 pub(crate) trait ToLeBytes {
-    fn to_le_bytes_vec(&self) -> Vec<u8>;
-}
-
-impl ToLeBytes for &str {
-    fn to_le_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
+    fn to_bytes(&self) -> Vec<u8>;
 }
 
 impl ToLeBytes for u16 {
-    fn to_le_bytes_vec(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
         self.to_le_bytes().to_vec()
     }
 }
 
 impl ToLeBytes for u32 {
-    fn to_le_bytes_vec(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
         self.to_le_bytes().to_vec()
     }
 }
 
 impl ToLeBytes for o16 {
-    fn to_le_bytes_vec(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
+    fn to_bytes(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
 pub(crate) trait FromLeBytes {
     fn from_bytes(bytes: Vec<u8>) -> Self;
 }
@@ -162,7 +134,7 @@ pub(crate) enum PayloadType {
     U8 = 5,
 }
 
-/// Payload type: String.
+/// Payload represents a key or data payload which is persisted as pages in a database.
 #[derive(Clone, Debug)]
 pub(crate) struct Payload {
     buffer: Vec<u8>,

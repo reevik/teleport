@@ -1,6 +1,6 @@
 use crate::errors::InvalidPageOffsetError;
 use crate::types::PayloadType::Str;
-use crate::types::{o16, FromLeBytes, Key, PagePayload, Payload, PayloadType, ToLeBytes};
+use crate::types::{o16, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
 use once_cell::sync::Lazy;
 use rand::Rng;
@@ -159,9 +159,9 @@ impl Page {
         );
         let payload_size_in_o16: o16 = payload_size.try_into().expect("");
         let key_buf_size_in_o16: o16 = key_buf_size.try_into().expect("");
-        slot.extend_from_slice(&payload_size_in_o16.to_le_bytes());
+        slot.extend_from_slice(&payload_size_in_o16.to_bytes());
         slot.extend_from_slice(&[payload_type as u8]);
-        slot.extend_from_slice(&key_buf_size_in_o16.to_le_bytes());
+        slot.extend_from_slice(&key_buf_size_in_o16.to_bytes());
         slot.extend_from_slice(&[key_type as u8]);
         slot.extend_from_slice(key_buf.as_slice());
         slot.extend_from_slice(&read_buf);
@@ -206,7 +206,7 @@ impl Page {
     // | Page Header | slot table | ... free space ... | new slot | prev slot | .. |
     fn add_to_slot_table(&mut self, new_free_end: o16) {
         let free_start = self.free_start();
-        let new_free_end_offset = &new_free_end.to_le_bytes();
+        let new_free_end_offset = &new_free_end.to_bytes();
         // Register the start offset of the last slot in the slot table.
         let start: usize = free_start.try_into().expect("");
         let end: usize = start + SIZE_OF_SLOT_TABLE_ITEM;
@@ -311,7 +311,7 @@ impl Page {
             &mut self.buffer,
             OFFSET_NUM_OF_SLOTS,
             num,
-            |value| value.to_le_bytes_vec(),
+            |value| value.to_bytes(),
         );
     }
 
@@ -321,7 +321,7 @@ impl Page {
 
     fn set_page_id(&mut self, num: o16) {
         Self::write_le::<o16, SIZE_PAGE_ID>(&mut self.buffer, OFFSET_PAGE_ID, num, |value| {
-            value.to_le_bytes_vec()
+            value.to_bytes()
         });
     }
 
@@ -353,7 +353,7 @@ impl Page {
 
     fn set_left_most_page_id(&mut self, num: o16) {
         Self::write_le::<o16, SIZE_LEFT_MOST>(&mut self.buffer, OFFSET_LEFT_MOST, num, |value| {
-            value.to_le_bytes_vec()
+            value.to_bytes()
         });
     }
 
@@ -366,7 +366,7 @@ impl Page {
             &mut self.buffer,
             OFFSET_LEFT_SIBLING,
             num,
-            |value| value.to_le_bytes_vec(),
+            |value| value.to_bytes(),
         );
     }
 
@@ -383,7 +383,7 @@ impl Page {
             &mut self.buffer,
             OFFSET_RIGHT_SIBLING,
             num,
-            |value| value.to_le_bytes_vec(),
+            |value| value.to_bytes(),
         );
     }
 
@@ -400,7 +400,7 @@ impl Page {
             &mut self.buffer,
             OFFSET_PARENT_PAGE_ID,
             num,
-            |value| value.to_le_bytes_vec(),
+            |value| value.to_bytes(),
         );
     }
 
@@ -410,7 +410,7 @@ impl Page {
 
     fn set_free_start(&mut self, num: o16) {
         Self::write_le::<o16, SIZE_FREE_START>(&mut self.buffer, OFFSET_FREE_START, num, |value| {
-            value.to_le_bytes_vec()
+            value.to_bytes()
         });
     }
 
@@ -420,7 +420,7 @@ impl Page {
 
     fn set_free_end(&mut self, num: o16) {
         Self::write_le::<o16, SIZE_FREE_END>(&mut self.buffer, OFFSET_FREE_END, num, |value| {
-            value.to_le_bytes_vec()
+            value.to_bytes()
         });
     }
 }
