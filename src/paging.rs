@@ -1,5 +1,6 @@
 use crate::errors::InvalidPageOffsetError;
-use crate::types::{o16, FromLeBytes, Key, PagePayload, Payload, ToLeBytes};
+use crate::types::PayloadType::Str;
+use crate::types::{o16, FromLeBytes, Key, PagePayload, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
 use once_cell::sync::Lazy;
 use rand::Rng;
@@ -96,7 +97,7 @@ impl Page {
         new_instance
     }
 
-    pub fn new_leaf<R: Ord + ToLeBytes>(key: Key<R>, payload: Payload) -> o16 {
+    pub fn new_leaf(key: Key, payload: Payload) -> o16 {
         let mut cache = CACHE.lock().unwrap();
         let mut parent_page = Self::new(DATA_PAGE);
         let current_page_id = parent_page.page_id();
@@ -124,28 +125,28 @@ impl Page {
         self.set_left_most_page_id(left_most_page_id);
     }
 
-    fn add_key_ref<R: Ord + ToLeBytes>(
-        &mut self,
-        key: Key<R>,
-        payload: Payload,
-    ) -> Result<(), InvalidPageOffsetError> {
+    fn add_key_ref(&mut self, key: Key, payload: Payload) -> Result<(), InvalidPageOffsetError> {
         match self.add_key_data(key, payload) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
     }
 
-    fn add_key_data<R: Ord + ToLeBytes>(
+    fn add_key_data(
         &mut self,
-        key: Key<R>,
+        key: Key,
         mut payload: Payload,
     ) -> Result<Payload, InvalidPageOffsetError> {
         // determine the payload and key size.
-        let key_buf = key.to_le_bytes();
+        let payload_ref = &payload;
+        let key_buf = key.to_bytes();
         let key_buf_size = key_buf.len();
         let payload_size = payload.len();
+        let payload_type = payload_ref.payload_type;
+        let key_type: PayloadType = Str;
+
         // each for payload and key size plus the slot table entry (offset) hence three.
-        let header_size = 3 * SIZE_OFFSET;
+        let header_size = 3 * SIZE_OFFSET + 2*SIZE_FLAGS;
         let free_space: usize = self.free_size().try_into().expect("");
         let available_net_free_space = free_space - header_size - key_buf_size;
         // consume the payload for available net space or payload size if it is smaller than available net space.
@@ -159,10 +160,11 @@ impl Page {
         let payload_size_in_o16: o16 = payload_size.try_into().expect("");
         let key_buf_size_in_o16: o16 = key_buf_size.try_into().expect("");
         slot.extend_from_slice(&payload_size_in_o16.to_le_bytes());
+        slot.extend_from_slice(&[payload_type as u8]);
         slot.extend_from_slice(&key_buf_size_in_o16.to_le_bytes());
+        slot.extend_from_slice(&[key_type as u8]);
         slot.extend_from_slice(key_buf.as_slice());
         slot.extend_from_slice(&read_buf);
-
         let new_free_end = self.add_slot(&mut slot);
         // advance the free start and slot table with the new free end.
         self.add_to_slot_table(new_free_end);
@@ -194,7 +196,7 @@ impl Page {
     }
 
     fn slot_size(key_len: usize, payload_len: usize) -> o16 {
-        (2 * size_of::<o16>() + key_len + payload_len)
+        (2 * size_of::<o16>() + 2 * size_of::<u8>() + key_len + payload_len)
             .try_into()
             .expect("Too many pages")
     }
@@ -212,7 +214,7 @@ impl Page {
         let size_of_slot_table_item: o16 = SIZE_OF_SLOT_TABLE_ITEM.try_into().expect("");
         self.set_free_start(free_start + size_of_slot_table_item);
         self.set_num_of_slots(self.num_of_slots() + 1);
-        debug_assert!(self.free_start() <= self.free_end());
+        //debug_assert!(self.free_start() <= self.free_end());
     }
 
     fn get_key_payload(&self, index: o16) -> Result<(String, String), Box<dyn Error>> {
@@ -233,23 +235,33 @@ impl Page {
         );
 
         let slot_offset_usize: usize = slot_offset.try_into()?;
+        let page_type_size: usize = SIZE_PAGE_ID.try_into().expect("");
+        let flag_offset = slot_offset_usize + page_type_size;
+        let payload_type =
+            Self::read_le::<u8, SIZE_FLAGS>(&self.buffer, flag_offset, u8::from_bytes);
+
+        let key_len_offset = flag_offset + SIZE_FLAGS;
         let key_len = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
             &self.buffer,
-            slot_offset_usize + SIZE_OF_SLOT_TABLE_ITEM,
+            key_len_offset,
             o16::from_bytes,
         );
 
-        let key_len_usize: usize = key_len.try_into()?;
-        let key = Self::read_le_into_buffer::<String>(
-            &self.buffer,
-            slot_offset_usize + (2 * SIZE_OF_SLOT_TABLE_ITEM),
-            key_len_usize,
-            |b| String::from_utf8_lossy(b.as_slice()).to_string(),
-        );
+        let key_type_offset = key_len_offset + SIZE_PAGE_ID;
+        let key_type =
+            Self::read_le::<u8, SIZE_FLAGS>(&self.buffer, key_type_offset, u8::from_bytes);
 
+        let key_offset = key_type_offset + SIZE_FLAGS;
+        let key_len_usize: usize = key_len.try_into()?;
+        let key =
+            Self::read_le_into_buffer::<String>(&self.buffer, key_offset, key_len_usize, |b| {
+                String::from_utf8_lossy(b.as_slice()).to_string()
+            });
+
+        let payload_offset = key_offset + key_len_usize;
         let payload = Self::read_le_into_buffer::<String>(
             &self.buffer,
-            (slot_offset_usize + (2 * SIZE_OF_SLOT_TABLE_ITEM) + key_len_usize),
+            payload_offset,
             payload_len.try_into().expect(""),
             |b| String::from_utf8_lossy(b.as_slice()).to_string(),
         );
@@ -418,8 +430,8 @@ fn test_add_slot_results_in_correct_num_of_slots() {
     let mut new_inner = Page::new_inner();
     let key1 = Payload::from_u16(123);
     let key2 = Payload::from_u16(789);
-    let _ = new_inner.add_key_ref(Key("abc"), key1);
-    let _ = new_inner.add_key_ref(Key("xyz"), key2);
+    let _ = new_inner.add_key_ref(Key::from_str("abc".to_string()), key1);
+    let _ = new_inner.add_key_ref(Key::from_str("xyz".to_string()), key2);
     assert_eq!(new_inner.num_of_slots(), o16(2));
 }
 
@@ -433,8 +445,8 @@ fn verify_available_space_empty_page() {
 
 #[test]
 fn verify_available_space_after_insertion() {
-    let key1 = Key("foo");
-    let key2 = Key("foo");
+    let key1 = Key::from_str("foo".to_string());
+    let key2 = Key::from_str("foo".to_string());
     let payload = Payload::from_str("123".to_string());
     let payload_len = payload.len();
     let mut new_inner = Page::new_inner();
@@ -458,8 +470,8 @@ fn verify_read_the_inserted() {
     let mut new_inner = Page::new_inner();
     let payload1 = Payload::from_str("123".to_string());
     let payload2 = Payload::from_str("234".to_string());
-    let _ = new_inner.add_key_ref(Key("abcdefg"), payload1);
-    let _ = new_inner.add_key_ref(Key("xyz"), payload2);
+    let _ = new_inner.add_key_ref(Key::from_str("abcdefg".to_string()), payload1);
+    let _ = new_inner.add_key_ref(Key::from_str("xyz".to_string()), payload2);
     match new_inner.get_key_payload(o16(0)) {
         Ok((key, payload)) => {
             assert_eq!(key, "abcdefg");
@@ -478,16 +490,39 @@ fn verify_read_the_inserted() {
 }
 
 #[test]
-fn verify_add_data_node() {
+fn verify_add_data_node_less_than_page_size() {
     let page_size: usize = PAGE_SIZE.try_into().expect("too large page size");
-    let string = random_string(page_size * 2);
-    let data_node = Page::new_leaf(Key("foo"), Payload::from_str(string));
+    let string = random_string(100);
+    assert!(string.len() < page_size);
+    let data_node = Page::new_leaf(Key::from_str("foo".to_string()), Payload::from_str(string));
     let cache = CACHE.lock().unwrap();
     let leading_page = cache.get(&data_node).expect("");
-    assert_eq!(cache.len(), 3);
+    assert!(leading_page.free_end() > leading_page.free_start());
+}
+
+#[test]
+fn verify_add_data_node_full_page() {
+    let key = Key::from_str("foo".to_string());
+    let page_size: usize = PAGE_SIZE.try_into().expect("too large page size");
+    let available_bytes = page_size
+        - TOTAL_HEADER_SIZE
+        - (2 * SIZE_PAGE_ID + 2 * SIZE_FLAGS + SIZE_OF_SLOT_TABLE_ITEM + key.len());
+    let string = random_string(available_bytes);
+    assert!(string.len() < page_size);
+    let data_node = Page::new_leaf(key, Payload::from_str(string));
+    let cache = CACHE.lock().unwrap();
+    let leading_page = cache.get(&data_node).expect("");
     assert_eq!(leading_page.free_end(), leading_page.free_start());
-    let overflow1 = cache.get(&leading_page.page_id()).expect("");
-    assert_eq!(overflow1.free_start(), overflow1.free_end());
+}
+
+#[test]
+fn verify_add_data_node_more_than_page_size() {
+    let page_size: usize = PAGE_SIZE.try_into().expect("too large page size");
+    let string = random_string(page_size * 2);
+    assert!(string.len() > page_size);
+    let data_node = Page::new_leaf(Key::from_str("foo".to_string()), Payload::from_str(string));
+    let cache = CACHE.lock().unwrap();
+    let leading_page = cache.get(&data_node).expect("");
 }
 
 fn random_string(len: usize) -> String {

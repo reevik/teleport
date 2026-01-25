@@ -1,26 +1,9 @@
+use core::fmt::Debug;
 use std::cmp::min;
 use std::io::Read;
 use std::ops::{Add, Sub};
 
-
 pub(crate) type o16 = OffsetType<u16>;
-
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
-pub(crate) struct Key<T>(pub T);
-impl<T: Ord> Key<T> {}
-
-impl<T> PagePayload for Key<T>
-where
-    T: Ord + ToLeBytes,
-{
-    fn to_le_bytes(&self) -> Vec<u8> {
-        self.0.to_le_bytes_vec()
-    }
-
-    fn len(&self) -> usize {
-        self.to_le_bytes().len()
-    }
-}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Hash, Ord)]
 pub(crate) struct OffsetType<T>(pub T);
@@ -168,9 +151,9 @@ impl FromLeBytes for u8 {
     }
 }
 
-//////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 #[repr(u8)]
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub(crate) enum PayloadType {
     Str = 1,
     U32 = 2,
@@ -184,10 +167,14 @@ pub(crate) enum PayloadType {
 pub(crate) struct Payload {
     buffer: Vec<u8>,
     cursor_pos: usize,
-    payload_type: PayloadType,
+    pub payload_type: PayloadType,
 }
 
 impl Payload {
+    pub(crate) fn to_bytes(&self) -> &Vec<u8> {
+        &self.buffer
+    }
+
     /// Converts a String object into a Payload instance.
     pub(crate) fn from_str(payload: String) -> Self {
         Payload {
@@ -248,3 +235,5 @@ impl Read for Payload {
         Ok(self.cursor_pos)
     }
 }
+
+pub(crate) type Key = Payload;
