@@ -1,3 +1,4 @@
+use crate::errors::InvalidPageOffsetError;
 use core::fmt::Debug;
 use std::cmp::min;
 use std::io::Read;
@@ -24,12 +25,12 @@ impl<T> TryFrom<usize> for OffsetType<T>
 where
     T: TryFrom<usize>,
 {
-    type Error = crate::errors::InvalidPageOffsetError;
+    type Error = InvalidPageOffsetError;
 
-    fn try_from(value: usize) -> Result<Self, crate::errors::InvalidPageOffsetError> {
+    fn try_from(value: usize) -> Result<Self, InvalidPageOffsetError> {
         T::try_from(value)
             .map(OffsetType)
-            .map_err(|_| crate::errors::InvalidPageOffsetError::OutOfRange)
+            .map_err(|_| InvalidPageOffsetError::OutOfRange)
     }
 }
 
@@ -37,10 +38,13 @@ impl<T> TryFrom<OffsetType<T>> for usize
 where
     usize: TryFrom<T>,
 {
-    type Error = <usize as TryFrom<T>>::Error;
+    type Error = InvalidPageOffsetError;
 
-    fn try_from(value: OffsetType<T>) -> Result<Self, Self::Error> {
-        usize::try_from(value.0)
+    fn try_from(value: OffsetType<T>) -> Result<Self, InvalidPageOffsetError> {
+        if let Ok(ok) = usize::try_from(value.0) {
+            return Ok(ok);
+        }
+        Err(InvalidPageOffsetError::OutOfRange)
     }
 }
 
