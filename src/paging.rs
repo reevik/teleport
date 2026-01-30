@@ -206,8 +206,9 @@ impl Page {
         let copy_size = min(payload.len(), max_available_payload_size);
         let mut payload_in_bytes: Vec<u8> = vec![0; copy_size];
         let _ = payload.read(&mut payload_in_bytes);
+        let copy_size_o16: o16 = copy_size.try_into().expect("Too many pages");
         let mut slot: Vec<u8> = Vec::with_capacity(copy_size);
-        slot.extend_from_slice(&copy_size.to_le_bytes());
+        slot.extend_from_slice(&copy_size_o16.to_bytes());
         slot.extend_from_slice(&payload_in_bytes);
         let new_free_end = self.add_slot(&mut slot)?;
         // advance the free start and slot table with the new free end.
@@ -216,7 +217,7 @@ impl Page {
     }
 
     fn max_available_payload_size_in_overflow_page(&self) -> o16 {
-        self.free_size() - SIZE_OF_SLOT_TABLE_ITEM.try_into().expect("Too many pages")
+        self.free_size() - 2 * SIZE_OF_SLOT_TABLE_ITEM
     }
 
     fn slot_size(key_len: usize, payload_len: usize) -> o16 {
@@ -314,7 +315,7 @@ impl Page {
 
     fn add_slot(&mut self, slot: &Vec<u8>) -> Result<o16, InvalidPageOffsetError> {
         let free_end = self.free_end();
-        let new_free_end = free_end - slot.len().try_into()?;
+        let new_free_end = free_end - slot.len();
         // update the buffer with key-payload.
         self.buffer[new_free_end.try_into().expect("")..free_end.try_into()?]
             .copy_from_slice(&slot);
@@ -482,7 +483,7 @@ fn test_add_slot_results_in_correct_num_of_slots() {
 fn verify_available_space_empty_page() -> Result<(), InvalidPageOffsetError> {
     let mut new_inner = Page::new_inner();
     let available_space = new_inner.free_size();
-    let total_empty_size = PAGE_SIZE - TOTAL_HEADER_SIZE.try_into()?;
+    let total_empty_size = PAGE_SIZE - TOTAL_HEADER_SIZE;
     assert_eq!(available_space, total_empty_size);
     Ok(())
 }
