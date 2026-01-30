@@ -53,6 +53,7 @@ const OFFSET_PARENT_PAGE_ID: usize = OFFSET_RIGHT_SIBLING + SIZE_RIGHT_SIBLING;
 const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + SIZE_PARENT_PAGE_ID;
 const OFFSET_FREE_END: usize = OFFSET_FREE_START + SIZE_FREE_START;
 
+#[derive(Clone, Copy)]
 pub struct Page {
     buffer: [u8; PAGE_SIZE_USIZE],
 }
@@ -131,6 +132,7 @@ impl Page {
         }
     }
 
+    // Adds data into a leaf node.
     fn add_key_data(
         &mut self,
         key: Key,
@@ -146,18 +148,15 @@ impl Page {
 
         // each for payload and key size plus the slot table entry (offset) hence three.
         let header_size = 3 * SIZE_OFFSET + 2 * SIZE_FLAGS;
-        let free_space: usize = self.free_size().try_into().expect("");
+        let free_space: usize = self.free_size().try_into()?;
         let available_net_free_space = free_space - header_size - key_buf_size;
         // consume the payload for available net space or payload size if it is smaller than available net space.
         let mut read_buf = vec![0; min(available_net_free_space, payload_size)];
         let _ = payload.read(&mut read_buf);
-        let mut slot: Vec<u8> = Vec::with_capacity(
-            Self::slot_size(key_buf_size, payload_size)
-                .try_into()
-                .expect(""),
-        );
-        let payload_size_in_o16: o16 = payload_size.try_into().expect("");
-        let key_buf_size_in_o16: o16 = key_buf_size.try_into().expect("");
+        let mut slot: Vec<u8> =
+            Vec::with_capacity(Self::slot_size(key_buf_size, payload_size).try_into()?);
+        let payload_size_in_o16: o16 = payload_size.try_into()?;
+        let key_buf_size_in_o16: o16 = key_buf_size.try_into()?;
         slot.extend_from_slice(&payload_size_in_o16.to_bytes());
         slot.extend_from_slice(&[payload_type as u8]);
         slot.extend_from_slice(&key_buf_size_in_o16.to_bytes());
@@ -170,6 +169,32 @@ impl Page {
         Ok(payload)
     }
 
+    // Read offset payload as a vector of bytes.
+    fn get_overflow_data(&self) -> Result<Vec<u8>, InvalidPageOffsetError> {
+        let offset_index = TOTAL_HEADER_SIZE;
+        let slot_offset = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+            &self.buffer,
+            offset_index,
+            o16::from_bytes,
+        );
+
+        let payload_len = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+            &self.buffer,
+            slot_offset.try_into()?,
+            o16::from_bytes,
+        );
+
+        let slot_offset_usize: usize = slot_offset.try_into()?;
+        let payload_offset = slot_offset_usize + SIZE_PAGE_ID;
+        let payload: Vec<u8> = Self::read_le_into_buffer::<Vec<u8>>(
+            &self.buffer,
+            payload_offset,
+            payload_len.try_into()?,
+            |b| b,
+        );
+
+        Ok(payload)
+    }
     fn add_overflow_data(
         &mut self,
         mut payload: Payload,
@@ -216,7 +241,7 @@ impl Page {
         Ok(())
     }
 
-    fn get_key_payload(&self, index: o16) -> Result<(String, String), InvalidPageOffsetError> {
+    fn get_key_payload(&self, index: o16) -> Result<String, InvalidPageOffsetError> {
         let index_usize: usize = index.try_into()?;
         let o16_size: usize = size_of::<o16>();
         let offset_index = TOTAL_HEADER_SIZE + (index_usize * o16_size);
@@ -247,25 +272,44 @@ impl Page {
         );
 
         let key_type_offset = key_len_offset + SIZE_PAGE_ID;
-        let key_type =
-            Self::read_le::<u8, SIZE_FLAGS>(&self.buffer, key_type_offset, u8::from_bytes);
-
         let key_offset = key_type_offset + SIZE_FLAGS;
         let key_len_usize: usize = key_len.try_into()?;
-        let key =
-            Self::read_le_into_buffer::<String>(&self.buffer, key_offset, key_len_usize, |b| {
-                String::from_utf8_lossy(b.as_slice()).to_string()
-            });
 
+        let page_size: usize = PAGE_SIZE.try_into()?;
+        let max_payload_capacity =
+            page_size - (key_len_usize + TOTAL_HEADER_SIZE + 3 * SIZE_PAGE_ID + 2 * SIZE_PAGE_TYPE);
+        let stringify = |b: Vec<u8>| String::from_utf8_lossy(b.as_slice()).to_string();
         let payload_offset = key_offset + key_len_usize;
-        let payload = Self::read_le_into_buffer::<String>(
+        let mut payload = Self::read_le_into_buffer::<Vec<u8>>(
             &self.buffer,
             payload_offset,
-            payload_len.try_into()?,
-            |b| String::from_utf8_lossy(b.as_slice()).to_string(),
+            min(max_payload_capacity, payload_len.try_into()?),
+            |b| b,
         );
 
-        Ok((key, payload))
+        let mut current_right_sibling = self.right_sibling();
+        if current_right_sibling == o16(0) {
+            return Ok(stringify(payload));
+        }
+
+        loop {
+            if current_right_sibling == o16(0) {
+                break;
+            }
+            current_right_sibling = match CACHE.lock().unwrap().get(&current_right_sibling) {
+                Some(overflow_page) => {
+                    if let Ok(overflow_data) = overflow_page.get_overflow_data() {
+                        payload.extend_from_slice(&overflow_data);
+                    }
+                    overflow_page.right_sibling()
+                }
+                None => {
+                    panic!("Page ID out of bounds");
+                }
+            };
+        }
+
+        Ok(stringify(payload))
     }
 
     fn add_slot(&mut self, slot: &Vec<u8>) -> Result<o16, InvalidPageOffsetError> {
@@ -435,7 +479,7 @@ fn test_add_slot_results_in_correct_num_of_slots() {
 }
 
 #[test]
-fn verify_available_space_empty_page() -> Result<(), InvalidPageOffsetError>  {
+fn verify_available_space_empty_page() -> Result<(), InvalidPageOffsetError> {
     let mut new_inner = Page::new_inner();
     let available_space = new_inner.free_size();
     let total_empty_size = PAGE_SIZE - TOTAL_HEADER_SIZE.try_into()?;
@@ -444,7 +488,7 @@ fn verify_available_space_empty_page() -> Result<(), InvalidPageOffsetError>  {
 }
 
 #[test]
-fn verify_available_space_after_insertion() -> Result<(), InvalidPageOffsetError>  {
+fn verify_available_space_after_insertion() -> Result<(), InvalidPageOffsetError> {
     let key1 = Key::from_str("foo".to_string());
     let key2 = Key::from_str("foo".to_string());
     let payload = Payload::from_str("123".to_string());
@@ -452,11 +496,8 @@ fn verify_available_space_after_insertion() -> Result<(), InvalidPageOffsetError
     let mut new_inner = Page::new_inner();
     let _ = new_inner.add_key_ref(key1.clone(), payload.clone());
     let _ = new_inner.add_key_ref(key2, payload);
-    let available_space: usize = new_inner
-        .free_size()
-        .try_into()?;
-    let slot_size: usize = Page::slot_size(key1.len(), payload_len)
-        .try_into()?;
+    let available_space: usize = new_inner.free_size().try_into()?;
+    let slot_size: usize = Page::slot_size(key1.len(), payload_len).try_into()?;
     let page_size: usize = PAGE_SIZE.try_into()?;
     let total_empty_size: usize =
         page_size - (TOTAL_HEADER_SIZE + (2 * SIZE_OF_SLOT_TABLE_ITEM) + (2 * slot_size));
@@ -472,16 +513,14 @@ fn verify_read_the_inserted() {
     let _ = new_inner.add_key_ref(Key::from_str("abcdefg".to_string()), payload1);
     let _ = new_inner.add_key_ref(Key::from_str("xyz".to_string()), payload2);
     match new_inner.get_key_payload(o16(0)) {
-        Ok((key, payload)) => {
-            assert_eq!(key, "abcdefg");
+        Ok((payload)) => {
             assert_eq!(payload, "123");
         }
         Err(_) => assert!(false),
     }
 
     match new_inner.get_key_payload(o16(1)) {
-        Ok((key, payload)) => {
-            assert_eq!(key, "xyz");
+        Ok((payload)) => {
             assert_eq!(payload, "234");
         }
         Err(_) => assert!(false),
@@ -519,11 +558,20 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
 #[test]
 fn verify_add_data_node_more_than_page_size() -> Result<(), InvalidPageOffsetError> {
     let page_size: usize = PAGE_SIZE.try_into()?;
-    let string = random_string(page_size * 2);
-    assert!(string.len() > page_size);
-    let data_node = Page::new_leaf(Key::from_str("foo".to_string()), Payload::from_str(string))?;
-    let cache = CACHE.lock().unwrap();
-    let leading_page = cache.get(&data_node).expect("");
+    let input_value = random_string(page_size * 2);
+    assert!(input_value.len() > page_size);
+    let data_node = Page::new_leaf(
+        Key::from_str("foo".to_string()),
+        Payload::from_str(input_value.clone()),
+    )?;
+
+    let leading_page = {
+        let cache = CACHE.lock().unwrap();
+        cache.get(&data_node).cloned().expect("")
+    };
+    if let Ok(payload) = leading_page.get_key_payload(o16(0)) {
+        assert_eq!(input_value, payload)
+    }
     Ok(())
 }
 
