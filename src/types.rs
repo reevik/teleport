@@ -2,7 +2,7 @@ use crate::errors::InvalidPageOffsetError;
 use core::fmt::Debug;
 use std::cmp::min;
 use std::io::Read;
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, Sub};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Hash, Ord)]
 pub(crate) struct OffsetType<T>(pub T);

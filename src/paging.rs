@@ -99,10 +99,10 @@ impl Page {
 
     pub fn new_leaf(key: Key, payload: Payload) -> Result<o16, InvalidPageOffsetError> {
         let mut cache = CACHE.lock().unwrap();
-        let mut parent_page = Self::new(DATA_PAGE);
+        let parent_page = Self::new(DATA_PAGE);
         let current_page_id = parent_page.page_id();
         cache.insert(current_page_id, parent_page);
-        let mut current_page = cache.get_mut(&current_page_id).expect("");
+        let current_page = cache.get_mut(&current_page_id).expect("");
         let mut residual = current_page.add_key_data(key, payload).expect("");
         let mut prev_page_id = current_page_id;
         while residual.len() > 0 {
@@ -481,7 +481,7 @@ fn test_add_slot_results_in_correct_num_of_slots() {
 
 #[test]
 fn verify_available_space_empty_page() -> Result<(), InvalidPageOffsetError> {
-    let mut new_inner = Page::new_inner();
+    let new_inner = Page::new_inner();
     let available_space = new_inner.free_size();
     let total_empty_size = PAGE_SIZE - TOTAL_HEADER_SIZE;
     assert_eq!(available_space, total_empty_size);
@@ -514,14 +514,14 @@ fn verify_read_the_inserted() {
     let _ = new_inner.add_key_ref(Key::from_str("abcdefg".to_string()), payload1);
     let _ = new_inner.add_key_ref(Key::from_str("xyz".to_string()), payload2);
     match new_inner.get_key_payload(o16(0)) {
-        Ok((payload)) => {
+        Ok(payload) => {
             assert_eq!(payload, "123");
         }
         Err(_) => assert!(false),
     }
 
     match new_inner.get_key_payload(o16(1)) {
-        Ok((payload)) => {
+        Ok(payload) => {
             assert_eq!(payload, "234");
         }
         Err(_) => assert!(false),

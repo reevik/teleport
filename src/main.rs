@@ -7,5 +7,5 @@ mod errors;
 
 fn main() {
     println!("Hello, world!");
-    let page = paging::Page::new_inner();
+    let _ = paging::Page::new_inner();
 }
