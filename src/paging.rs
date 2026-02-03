@@ -1,16 +1,14 @@
 use crate::errors::InvalidPageOffsetError;
+use crate::io;
 use crate::types::PayloadType::Str;
 use crate::types::{o16, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
-use once_cell::sync::Lazy;
 use rand::Rng;
 use std::cmp::min;
-use std::collections::HashMap;
 use std::convert::TryInto;
+use std::fs;
 use std::io::Read;
-use std::sync::Mutex;
-
-static CACHE: Lazy<Mutex<HashMap<o16, Page>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+use crate::io::delete_index;
 
 const ZERO: o16 = o16(0);
 static mut NEXT_PAGE_ID: o16 = o16(0);
@@ -88,21 +86,17 @@ impl Page {
     }
 
     pub fn new_leaf(key: Key, payload: Payload) -> Result<o16, InvalidPageOffsetError> {
-        let mut cache = CACHE.lock().unwrap();
-        let parent_page = Self::new(DATA_PAGE);
-        let current_page_id = parent_page.page_id();
-        cache.insert(current_page_id, parent_page);
-        let current_page = cache.get_mut(&current_page_id).expect("");
-        let mut residual = current_page.add_key_data(key, payload).expect("");
-        let mut prev_page_id = current_page_id;
+        let head_page = Self::new(DATA_PAGE);
+        let current_page_id = head_page.page_id();
+        io::write(head_page);
+        let mut current_page = head_page;
+        let mut residual = current_page.add_key_data(key, payload)?;
         while residual.len() > 0 {
             let mut overflow_page = Self::new(DATA_PAGE);
-            let overflow_page_id = overflow_page.page_id();
-            residual = overflow_page.add_overflow_data(residual).expect("");
-            cache.insert(overflow_page_id, overflow_page);
-            let prev_page = cache.get_mut(&prev_page_id).expect("");
-            prev_page.set_right_sibling(overflow_page_id);
-            prev_page_id = overflow_page_id;
+            current_page.set_right_sibling(current_page.page_id());
+            residual = overflow_page.add_overflow_data(residual)?;
+            io::write(overflow_page);
+            current_page = overflow_page;
         }
         Ok(current_page_id)
     }
@@ -287,7 +281,8 @@ impl Page {
             if current_right_sibling == o16(0) {
                 break;
             }
-            current_right_sibling = match CACHE.lock().unwrap().get(&current_right_sibling) {
+
+            current_right_sibling = match io::read(current_right_sibling.0 as usize) {
                 Some(overflow_page) => {
                     if let Ok(overflow_data) = overflow_page.get_overflow_data() {
                         payload.extend_from_slice(&overflow_data);
@@ -528,9 +523,13 @@ fn verify_add_data_node_less_than_page_size() -> Result<(), InvalidPageOffsetErr
     let string = random_string(100);
     assert!(string.len() < page_size);
     let data_node = Page::new_leaf(Key::from_str("foo".to_string()), Payload::from_str(string))?;
-    let cache = CACHE.lock().unwrap();
-    let leading_page = cache.get(&data_node).expect("");
-    assert!(leading_page.free_end() > leading_page.free_start());
+    let page = io::read(data_node.0 as usize);
+    if let Some(leading_page) = page {
+        assert!(leading_page.free_end() > leading_page.free_start());
+    } else {
+        assert!(false);
+    }
+
     Ok(())
 }
 
@@ -544,14 +543,18 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
     let string = random_string(available_bytes);
     assert!(string.len() < page_size);
     let data_node = Page::new_leaf(key, Payload::from_str(string))?;
-    let cache = CACHE.lock().unwrap();
-    let leading_page = cache.get(&data_node).expect("");
-    assert_eq!(leading_page.free_end(), leading_page.free_start());
+    let page = io::read(data_node.0 as usize);
+    if let Some(leading_page) = page {
+        assert!(leading_page.free_end() > leading_page.free_start());
+    } else {
+        assert!(false);
+    }
     Ok(())
 }
 
 #[test]
 fn verify_add_data_node_more_than_page_size() -> Result<(), InvalidPageOffsetError> {
+    delete_index();
     let page_size: usize = PAGE_SIZE.try_into()?;
     let input_value = random_string(page_size * 2);
     assert!(input_value.len() > page_size);
@@ -560,13 +563,15 @@ fn verify_add_data_node_more_than_page_size() -> Result<(), InvalidPageOffsetErr
         Payload::from_str(input_value.clone()),
     )?;
 
-    let leading_page = {
-        let cache = CACHE.lock().unwrap();
-        cache.get(&data_node).cloned().expect("")
-    };
-    if let Ok(payload) = leading_page.get_key_payload(o16(0)) {
-        assert_eq!(input_value, payload)
+    let page = io::read(data_node.0 as usize);
+    if let Some(leading_page) = page {
+        if let Ok(payload) = leading_page.get_key_payload(o16(0)) {
+            assert_eq!(input_value, payload)
+        }
+    } else {
+        assert!(false);
     }
+
     Ok(())
 }
 
