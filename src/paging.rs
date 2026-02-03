@@ -15,7 +15,7 @@ static CACHE: Lazy<Mutex<HashMap<o16, Page>>> = Lazy::new(|| Mutex::new(HashMap:
 const ZERO: o16 = o16(0);
 static mut NEXT_PAGE_ID: o16 = o16(0);
 pub(crate) const PAGE_SIZE: o16 = o16(4096);
-const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
+pub(crate) const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
 
 const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
 const SIZE_PAGE_ID: usize = size_of::<o16>();
@@ -81,6 +81,10 @@ impl Page {
             NEXT_PAGE_ID = o16(NEXT_PAGE_ID.0 + 1);
         }
         new_instance
+    }
+
+    pub(crate) fn new_from(buffer: [u8; PAGE_SIZE_USIZE]) -> Self {
+        Page { buffer }
     }
 
     pub fn new_leaf(key: Key, payload: Payload) -> Result<o16, InvalidPageOffsetError> {
