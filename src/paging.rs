@@ -14,7 +14,7 @@ static CACHE: Lazy<Mutex<HashMap<o16, Page>>> = Lazy::new(|| Mutex::new(HashMap:
 
 const ZERO: o16 = o16(0);
 static mut NEXT_PAGE_ID: o16 = o16(0);
-const PAGE_SIZE: o16 = o16(4096);
+pub(crate) const PAGE_SIZE: o16 = o16(4096);
 const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
 
 const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
@@ -56,20 +56,6 @@ const OFFSET_FREE_END: usize = OFFSET_FREE_START + SIZE_FREE_START;
 #[derive(Clone, Copy)]
 pub struct Page {
     buffer: [u8; PAGE_SIZE_USIZE],
-}
-
-enum PageType {
-    INNER,
-    LEAF,
-}
-
-impl From<u8> for PageType {
-    fn from(value: u8) -> Self {
-        if value == 0 {
-            return Self::INNER;
-        }
-        Self::LEAF
-    }
 }
 
 const DATA_PAGE: u8 = 0;
@@ -359,7 +345,7 @@ impl Page {
         );
     }
 
-    fn page_id(&self) -> o16 {
+    pub(crate) fn page_id(&self) -> o16 {
         Self::read_le::<o16, SIZE_PAGE_ID>(&self.buffer, OFFSET_PAGE_ID, |v| o16::from_bytes(v))
     }
 
@@ -367,6 +353,10 @@ impl Page {
         Self::write_le::<o16, SIZE_PAGE_ID>(&mut self.buffer, OFFSET_PAGE_ID, num, |value| {
             value.to_bytes()
         });
+    }
+
+    pub(crate) fn buffer(&self) -> &[u8] {
+        &self.buffer
     }
 
     fn page_type(&self) -> u8 {

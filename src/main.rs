@@ -4,6 +4,8 @@ extern crate core;
 mod paging;
 mod types;
 mod errors;
+mod btree;
+mod io;
 
 fn main() {
     println!("Hello, world!");

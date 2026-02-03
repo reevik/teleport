@@ -2,7 +2,7 @@ use crate::errors::InvalidPageOffsetError;
 use core::fmt::Debug;
 use std::cmp::min;
 use std::io::Read;
-use std::ops::{Add, Sub};
+use std::ops::{Add, Mul, Sub};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Hash, Ord)]
 pub(crate) struct OffsetType<T>(pub T);
@@ -77,6 +77,14 @@ impl Add<i32> for o16 {
     fn add(self, rhs: i32) -> Self::Output {
         let right_value: u16 = rhs.try_into().expect("overflow");
         OffsetType::<u16>(self.0 + right_value)
+    }
+}
+
+impl Mul<o16> for o16 {
+    type Output = o16;
+
+    fn mul(self, rhs: o16) -> Self::Output {
+        o16(rhs.0 * self.0)
     }
 }
 
