@@ -41,5 +41,8 @@ fn read_from_disk(page_id: usize) -> Option<Arc<Page>> {
 }
 
 pub(crate) fn delete_index() {
-    fs::remove_file("index.000").unwrap();
+    match fs::remove_file("index.000") {
+        Ok(_) => println!("index.000 deleted."),
+        Err(_) => println!("index.000 not found."),
+    }
 }

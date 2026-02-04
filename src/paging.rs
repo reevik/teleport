@@ -88,13 +88,16 @@ impl Page {
     pub fn new_leaf(key: Key, payload: Payload) -> Result<o16, InvalidPageOffsetError> {
         let head_page = Self::new(DATA_PAGE);
         let current_page_id = head_page.page_id();
-        io::write(head_page);
         let mut current_page = head_page;
         let mut residual = current_page.add_key_data(key, payload)?;
+        if residual.len() == 0 {
+            io::write(current_page);
+        }
         while residual.len() > 0 {
             let mut overflow_page = Self::new(DATA_PAGE);
-            current_page.set_right_sibling(current_page.page_id());
+            current_page.set_right_sibling(overflow_page.page_id());
             residual = overflow_page.add_overflow_data(residual)?;
+            io::write(current_page);
             io::write(overflow_page);
             current_page = overflow_page;
         }
@@ -545,7 +548,7 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
     let data_node = Page::new_leaf(key, Payload::from_str(string))?;
     let page = io::read(data_node.0 as usize);
     if let Some(leading_page) = page {
-        assert!(leading_page.free_end() > leading_page.free_start());
+        assert_eq!(leading_page.free_end(), leading_page.free_start());
     } else {
         assert!(false);
     }
