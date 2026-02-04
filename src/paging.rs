@@ -91,14 +91,14 @@ impl Page {
         let mut current_page = head_page;
         let mut residual = current_page.add_key_data(key, payload)?;
         if residual.len() == 0 {
-            io::write(current_page);
+            io::write(&current_page);
         }
         while residual.len() > 0 {
             let mut overflow_page = Self::new(DATA_PAGE);
             current_page.set_right_sibling(overflow_page.page_id());
             residual = overflow_page.add_overflow_data(residual)?;
-            io::write(current_page);
-            io::write(overflow_page);
+            io::write(&current_page);
+            io::write(&overflow_page);
             current_page = overflow_page;
         }
         Ok(current_page_id)

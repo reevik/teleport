@@ -10,14 +10,14 @@ use std::sync::{Arc, Mutex};
 // in-memory cache which holds page ids to Page objects.
 static CACHE: Lazy<Mutex<HashMap<o16, Arc<Page>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn write(page: Page) {
+pub(crate) fn write(page: &Page) {
     let page_id = page.page_id();
     let file_offset = page_id * PAGE_SIZE;
     let mut file = OpenOptions::new().write(true).create(true).open("index.000").unwrap();
     let _ = file.seek(SeekFrom::Start(file_offset.0 as u64));
     let _ = file.write_all(page.buffer());
     let mut cache = CACHE.lock().unwrap();
-    cache.insert(page.page_id(), Arc::new(page));
+    cache.insert(page.page_id(), Arc::new(page.clone()));
 }
 
 pub(crate) fn read(page_id: usize) -> Option<Arc<Page>> {
