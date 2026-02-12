@@ -1,19 +1,19 @@
 use crate::errors::InvalidPageOffsetError;
 use crate::io;
+use crate::io::delete_index;
 use crate::types::PayloadType::Str;
 use crate::types::{o16, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
 use rand::Rng;
 use std::cmp::min;
 use std::convert::TryInto;
-use std::fs;
 use std::io::Read;
-use crate::io::delete_index;
 
 const ZERO: o16 = o16(0);
 static mut NEXT_PAGE_ID: o16 = o16(0);
 pub(crate) const PAGE_SIZE: o16 = o16(4096);
 pub(crate) const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
+pub(crate) const FAN_OUT: usize = 5;
 
 const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
 const SIZE_PAGE_ID: usize = size_of::<o16>();
@@ -38,6 +38,10 @@ pub const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
     + SIZE_NUM_OF_SLOTS
     + SIZE_FREE_START
     + SIZE_FREE_END;
+
+pub const SINGLE_SLOT_SPACE_REQUIREMENT: usize =
+    SINGLE_SLOT_HEADER_SIZE + SIZE_PAGE_ID + 2 * SIZE_PAGE_TYPE;
+pub const SINGLE_SLOT_HEADER_SIZE: usize = 3 * SIZE_PAGE_ID + 2 * SIZE_PAGE_TYPE;
 
 /// Offsets in the
 const OFFSET_NUM_OF_SLOTS: usize = 0;
@@ -131,10 +135,11 @@ impl Page {
         let key_buf_size = key_buf.len();
         let payload_size = payload.len();
         let payload_type = payload_ref.payload_type;
-        let key_type: PayloadType = Str;
+        let key_buf_type: PayloadType = Str;
 
-        // each for payload and key size plus the slot table entry (offset) hence three.
-        let header_size = 3 * SIZE_OFFSET + 2 * SIZE_FLAGS;
+        // For each key, payload pair the following header metadata required:
+        // | slot offset | ----> | payload size | payload type | key size | key type | overflow ref | key | payload |
+        let header_size = SINGLE_SLOT_SPACE_REQUIREMENT;
         let free_space: usize = self.free_size().try_into()?;
         let available_net_free_space = free_space - header_size - key_buf_size;
         // consume the payload for available net space or payload size if it is smaller than available net space.
@@ -147,7 +152,8 @@ impl Page {
         slot.extend_from_slice(&payload_size_in_o16.to_bytes());
         slot.extend_from_slice(&[payload_type as u8]);
         slot.extend_from_slice(&key_buf_size_in_o16.to_bytes());
-        slot.extend_from_slice(&[key_type as u8]);
+        slot.extend_from_slice(&[key_buf_type as u8]);
+        slot.extend_from_slice(&o16(0).to_bytes());
         slot.extend_from_slice(key_buf.as_slice());
         slot.extend_from_slice(&read_buf);
         let new_free_end = self.add_slot(&mut slot)?;
@@ -208,7 +214,7 @@ impl Page {
     }
 
     fn slot_size(key_len: usize, payload_len: usize) -> o16 {
-        (2 * size_of::<o16>() + 2 * size_of::<u8>() + key_len + payload_len)
+        (SINGLE_SLOT_HEADER_SIZE + key_len + payload_len)
             .try_into()
             .expect("Too many pages")
     }
@@ -260,12 +266,12 @@ impl Page {
         );
 
         let key_type_offset = key_len_offset + SIZE_PAGE_ID;
-        let key_offset = key_type_offset + SIZE_FLAGS;
+        let overflow_page_ref_offset = key_type_offset + SIZE_FLAGS;
+        let key_offset = overflow_page_ref_offset + SIZE_PAGE_ID;
         let key_len_usize: usize = key_len.try_into()?;
-
         let page_size: usize = PAGE_SIZE.try_into()?;
         let max_payload_capacity =
-            page_size - (key_len_usize + TOTAL_HEADER_SIZE + 3 * SIZE_PAGE_ID + 2 * SIZE_PAGE_TYPE);
+            page_size - (key_len_usize + TOTAL_HEADER_SIZE + SINGLE_SLOT_SPACE_REQUIREMENT);
         let stringify = |b: Vec<u8>| String::from_utf8_lossy(b.as_slice()).to_string();
         let payload_offset = key_offset + key_len_usize;
         let mut payload = Self::read_le_into_buffer::<Vec<u8>>(
@@ -361,7 +367,7 @@ impl Page {
         &self.buffer
     }
 
-    fn page_type(&self) -> u8 {
+    pub(crate) fn page_type(&self) -> u8 {
         Self::read_le::<u8, SIZE_PAGE_TYPE>(&self.buffer, OFFSET_PAGE_TYPE, |value| {
             u8::from_bytes(value)
         })
@@ -458,6 +464,15 @@ impl Page {
         Self::write_le::<o16, SIZE_FREE_END>(&mut self.buffer, OFFSET_FREE_END, num, |value| {
             value.to_bytes()
         });
+    }
+
+    pub(crate) fn get_key_refs(&self) -> Option<(Key, Payload)> {
+        if self.page_type() == 0 {
+            return None;
+        }
+
+        let number_of_slots: usize = self.num_of_slots().try_into().unwrap();
+        None
     }
 }
 

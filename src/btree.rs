@@ -1,7 +1,14 @@
+use std::sync::Arc;
+use crate::io;
+use crate::paging::Page;
+
 const FAN_OUT: u8 = 1 << 3;
 
-struct BTree {
-    root: Node,
+struct Index {
+    root: Option<Box<Node>>,
+}
+
+impl Index {
 }
 
 struct Node {
@@ -18,6 +25,4 @@ enum NodeType {
     Inner,
 }
 
-impl Node {
-
-}
+impl Node {}
