@@ -2,7 +2,7 @@ use crate::errors::InvalidPageOffsetError;
 use crate::io;
 use crate::io::delete_index;
 use crate::types::PayloadType::Str;
-use crate::types::{o16, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
+use crate::types::{FromLeBytes, Key, Payload, PayloadType, ToLeBytes, o16};
 use alloc::vec::Vec;
 use rand::Rng;
 use std::cmp::min;
@@ -39,8 +39,13 @@ pub const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
     + SIZE_FREE_START
     + SIZE_FREE_END;
 
-pub const SINGLE_SLOT_SPACE_REQUIREMENT: usize =
-    SINGLE_SLOT_HEADER_SIZE + SIZE_PAGE_ID + 2 * SIZE_PAGE_TYPE;
+pub const SINGLE_SLOT_SPACE_REQUIREMENT: usize = SINGLE_SLOT_HEADER_SIZE + SIZE_OF_SLOT_TABLE_ITEM;
+
+// 1x key size
+// 1x payload size
+// 1x overflow page ref.
+// key type
+// payload type.
 pub const SINGLE_SLOT_HEADER_SIZE: usize = 3 * SIZE_PAGE_ID + 2 * SIZE_PAGE_TYPE;
 
 /// Offsets in the
@@ -63,8 +68,20 @@ pub struct Page {
 const DATA_PAGE: u8 = 0;
 const INNER_PAGE: u8 = 1;
 
+fn next_page() -> o16 {
+    unsafe {
+        let next = NEXT_PAGE_ID;
+        NEXT_PAGE_ID = o16(NEXT_PAGE_ID.0 + 1);
+        next
+    }
+}
+
 impl Page {
     fn new(page_type: u8) -> Self {
+        Self::new_page(page_type, next_page())
+    }
+
+    fn new_page(page_type: u8, page_id: o16) -> Self {
         let mut new_instance = Self {
             buffer: [0u8; PAGE_SIZE_USIZE],
         };
@@ -78,10 +95,7 @@ impl Page {
         new_instance.set_free_start(TOTAL_HEADER_SIZE.try_into().expect("Too many pages"));
         new_instance.set_free_end(PAGE_SIZE.try_into().expect(""));
         new_instance.set_page_type(page_type);
-        unsafe {
-            new_instance.set_page_id(NEXT_PAGE_ID);
-            NEXT_PAGE_ID = o16(NEXT_PAGE_ID.0 + 1);
-        }
+        new_instance.set_page_id(page_id);
         new_instance
     }
 
@@ -93,17 +107,16 @@ impl Page {
         let head_page = Self::new(DATA_PAGE);
         let current_page_id = head_page.page_id();
         let mut current_page = head_page;
-        let mut residual = current_page.add_key_data(key, payload)?;
-        if residual.len() == 0 {
-            io::write(&current_page);
-        }
+        let payload_and_page_id = current_page.add_key_data(key, payload)?;
+        let mut residual = payload_and_page_id.0;
+        let mut page_id = payload_and_page_id.1;
+        io::write(&current_page);
         while residual.len() > 0 {
-            let mut overflow_page = Self::new(DATA_PAGE);
-            current_page.set_right_sibling(overflow_page.page_id());
-            residual = overflow_page.add_overflow_data(residual)?;
+            let mut current_page = Self::new_page(DATA_PAGE, page_id);
+            let overflow = current_page.add_overflow_data(residual)?;
             io::write(&current_page);
-            io::write(&overflow_page);
-            current_page = overflow_page;
+            residual = overflow.0;
+            page_id = overflow.1;
         }
         Ok(current_page_id)
     }
@@ -128,7 +141,7 @@ impl Page {
         &mut self,
         key: Key,
         mut payload: Payload,
-    ) -> Result<Payload, InvalidPageOffsetError> {
+    ) -> Result<(Payload, o16), InvalidPageOffsetError> {
         // determine the payload and key size.
         let payload_ref = &payload;
         let key_buf = key.to_bytes();
@@ -139,31 +152,60 @@ impl Page {
 
         // For each key, payload pair the following header metadata required:
         // | slot offset | ----> | payload size | payload type | key size | key type | overflow ref | key | payload |
-        let header_size = SINGLE_SLOT_SPACE_REQUIREMENT;
-        let free_space: usize = self.free_size().try_into()?;
-        let available_net_free_space = free_space - header_size - key_buf_size;
+
+        let slots_available = self.slots_available()?;
+        if slots_available == 0 {
+            panic!("No slot left!");
+        }
+
+        let available_net_free_space_for_payload = self.available_space_for_payload(key_buf_size);
         // consume the payload for available net space or payload size if it is smaller than available net space.
-        let mut read_buf = vec![0; min(available_net_free_space, payload_size)];
+        let mut read_buf = vec![0; min(available_net_free_space_for_payload?, payload_size)];
         let _ = payload.read(&mut read_buf);
         let mut slot: Vec<u8> =
             Vec::with_capacity(Self::slot_size(key_buf_size, payload_size).try_into()?);
-        let payload_size_in_o16: o16 = payload_size.try_into()?;
+        let payload_size_in_o16: o16 = read_buf.len().try_into()?;
         let key_buf_size_in_o16: o16 = key_buf_size.try_into()?;
+        let overflow_page_id = if payload.len() > 0 {
+            next_page()
+        } else {
+            o16(0)
+        };
         slot.extend_from_slice(&payload_size_in_o16.to_bytes());
         slot.extend_from_slice(&[payload_type as u8]);
         slot.extend_from_slice(&key_buf_size_in_o16.to_bytes());
         slot.extend_from_slice(&[key_buf_type as u8]);
-        slot.extend_from_slice(&o16(0).to_bytes());
+        slot.extend_from_slice(&overflow_page_id.to_bytes());
         slot.extend_from_slice(key_buf.as_slice());
         slot.extend_from_slice(&read_buf);
+
         let new_free_end = self.add_slot(&mut slot)?;
         // advance the free start and slot table with the new free end.
         self.add_to_slot_table(new_free_end)?;
-        Ok(payload)
+        Ok((payload, overflow_page_id))
+    }
+
+    // reserve minimum required space for residual slots.
+    fn available_space_for_payload(
+        &mut self,
+        key_buf_size: usize,
+    ) -> Result<usize, InvalidPageOffsetError> {
+        let slots_available = self.slots_available()?;
+        let free_space: usize = self.free_size().try_into()?;
+        Ok(free_space
+            - SINGLE_SLOT_SPACE_REQUIREMENT
+            - (slots_available - 1) * SINGLE_SLOT_SPACE_REQUIREMENT
+            - key_buf_size)
+    }
+
+    fn slots_available(&mut self) -> Result<usize, InvalidPageOffsetError> {
+        let num_of_slots: usize = self.num_of_slots().try_into()?;
+        let slots_available: usize = FAN_OUT - num_of_slots;
+        Ok(slots_available)
     }
 
     // Read offset payload as a vector of bytes.
-    fn get_overflow_data(&self) -> Result<Vec<u8>, InvalidPageOffsetError> {
+    fn get_overflow_data(&self) -> Result<(Vec<u8>, o16), InvalidPageOffsetError> {
         let offset_index = TOTAL_HEADER_SIZE;
         let slot_offset = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
             &self.buffer,
@@ -171,14 +213,18 @@ impl Page {
             o16::from_bytes,
         );
 
-        let payload_len = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let next_overflow = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
             &self.buffer,
             slot_offset.try_into()?,
             o16::from_bytes,
         );
 
         let slot_offset_usize: usize = slot_offset.try_into()?;
-        let payload_offset = slot_offset_usize + SIZE_PAGE_ID;
+        let payload_size_offset = slot_offset_usize + SIZE_PAGE_ID;
+        let payload_len =
+            Self::read_le::<o16, SIZE_PAGE_ID>(&self.buffer, payload_size_offset, o16::from_bytes);
+
+        let payload_offset = payload_size_offset + SIZE_PAGE_ID;
         let payload: Vec<u8> = Self::read_le_into_buffer::<Vec<u8>>(
             &self.buffer,
             payload_offset,
@@ -186,12 +232,12 @@ impl Page {
             |b| b,
         );
 
-        Ok(payload)
+        Ok((payload, next_overflow))
     }
     fn add_overflow_data(
         &mut self,
         mut payload: Payload,
-    ) -> Result<Payload, InvalidPageOffsetError> {
+    ) -> Result<(Payload, o16), InvalidPageOffsetError> {
         let max_available_payload_size: usize = self
             .max_available_payload_size_in_overflow_page()
             .try_into()
@@ -201,16 +247,22 @@ impl Page {
         let _ = payload.read(&mut payload_in_bytes);
         let copy_size_o16: o16 = copy_size.try_into().expect("Too many pages");
         let mut slot: Vec<u8> = Vec::with_capacity(copy_size);
+        let next_page_id = if payload.len() > 0 {
+            next_page()
+        } else {
+            o16(0)
+        };
+        slot.extend_from_slice(&next_page_id.to_bytes());
         slot.extend_from_slice(&copy_size_o16.to_bytes());
         slot.extend_from_slice(&payload_in_bytes);
         let new_free_end = self.add_slot(&mut slot)?;
         // advance the free start and slot table with the new free end.
         self.add_to_slot_table(new_free_end)?;
-        Ok(payload)
+        Ok((payload, next_page_id))
     }
 
     fn max_available_payload_size_in_overflow_page(&self) -> o16 {
-        self.free_size() - 2 * SIZE_OF_SLOT_TABLE_ITEM
+        self.free_size() - 3 * SIZE_OF_SLOT_TABLE_ITEM
     }
 
     fn slot_size(key_len: usize, payload_len: usize) -> o16 {
@@ -267,6 +319,12 @@ impl Page {
 
         let key_type_offset = key_len_offset + SIZE_PAGE_ID;
         let overflow_page_ref_offset = key_type_offset + SIZE_FLAGS;
+        let overflow_page_ref = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+            &self.buffer,
+            overflow_page_ref_offset,
+            o16::from_bytes,
+        );
+
         let key_offset = overflow_page_ref_offset + SIZE_PAGE_ID;
         let key_len_usize: usize = key_len.try_into()?;
         let page_size: usize = PAGE_SIZE.try_into()?;
@@ -281,22 +339,24 @@ impl Page {
             |b| b,
         );
 
-        let mut current_right_sibling = self.right_sibling();
-        if current_right_sibling == o16(0) {
+        let mut current_right_sibling = overflow_page_ref;
+        if current_right_sibling == ZERO {
             return Ok(stringify(payload));
         }
 
         loop {
-            if current_right_sibling == o16(0) {
+            if current_right_sibling == ZERO {
                 break;
             }
 
             current_right_sibling = match io::read(current_right_sibling.0 as usize) {
                 Some(overflow_page) => {
-                    if let Ok(overflow_data) = overflow_page.get_overflow_data() {
+                    if let Ok((overflow_data, next_overflow)) = overflow_page.get_overflow_data() {
                         payload.extend_from_slice(&overflow_data);
+                        next_overflow
+                    } else {
+                        ZERO
                     }
-                    overflow_page.right_sibling()
                 }
                 None => {
                     panic!("Page ID out of bounds");
@@ -554,16 +614,17 @@ fn verify_add_data_node_less_than_page_size() -> Result<(), InvalidPageOffsetErr
 #[test]
 fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
     let key = Key::from_str("foo".to_string());
-    let page_size: usize = PAGE_SIZE.try_into()?;
-    let available_bytes = page_size
-        - TOTAL_HEADER_SIZE
-        - (2 * SIZE_PAGE_ID + 2 * SIZE_FLAGS + SIZE_OF_SLOT_TABLE_ITEM + key.len());
-    let string = random_string(available_bytes);
-    assert!(string.len() < page_size);
-    let data_node = Page::new_leaf(key, Payload::from_str(string))?;
+    let max_page_size: usize = PAGE_SIZE.try_into()?;
+    // available bytes consists of available space excluding the page header, one slot header
+    // requirements, and the rest reserved for remaining slots, and key length.
+    let available_bytes = max_page_size - (TOTAL_HEADER_SIZE + (FAN_OUT * SINGLE_SLOT_SPACE_REQUIREMENT) + key.len());
+    let payload_string = random_string(available_bytes);
+    assert!(payload_string.len() < max_page_size);
+    let data_node = Page::new_leaf(key, Payload::from_str(payload_string))?;
     let page = io::read(data_node.0 as usize);
     if let Some(leading_page) = page {
-        assert_eq!(leading_page.free_end(), leading_page.free_start());
+        let free_space: usize = leading_page.free_size().try_into()?;
+        assert_eq!(free_space, (FAN_OUT - 1) * SINGLE_SLOT_SPACE_REQUIREMENT);
     } else {
         assert!(false);
     }
@@ -574,6 +635,7 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
 fn verify_add_data_node_more_than_page_size() -> Result<(), InvalidPageOffsetError> {
     delete_index();
     let page_size: usize = PAGE_SIZE.try_into()?;
+    // one head page and two overflow pages expected.
     let input_value = random_string(page_size * 2);
     assert!(input_value.len() > page_size);
     let data_node = Page::new_leaf(
@@ -582,8 +644,10 @@ fn verify_add_data_node_more_than_page_size() -> Result<(), InvalidPageOffsetErr
     )?;
 
     let page = io::read(data_node.0 as usize);
+    // we read the first item in the list.
+    let record_index = ZERO;
     if let Some(leading_page) = page {
-        if let Ok(payload) = leading_page.get_key_payload(o16(0)) {
+        if let Ok(payload) = leading_page.get_key_payload(record_index) {
             assert_eq!(input_value, payload)
         }
     } else {
