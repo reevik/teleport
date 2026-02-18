@@ -2,7 +2,7 @@ use crate::errors::InvalidPageOffsetError;
 use crate::io;
 use crate::io::delete_index;
 use crate::types::PayloadType::Str;
-use crate::types::{FromLeBytes, Key, Payload, PayloadType, ToLeBytes, o16};
+use crate::types::{o16, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
 use rand::Rng;
 use std::cmp::min;
@@ -11,10 +11,11 @@ use std::io::Read;
 
 const ZERO: o16 = o16(0);
 static mut NEXT_PAGE_ID: o16 = o16(0);
-pub(crate) const PAGE_SIZE: o16 = o16(4096);
+pub(crate) const PAGE_SIZE: o16 = o16(8172);
 pub(crate) const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
-pub(crate) const FAN_OUT: usize = 5;
-
+const MIN_FAN_OUT: usize = 5;
+const MAX_FAN_OUT: usize = 5;
+const MAX_KEY_SIZE: usize = 1024;
 const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
 const SIZE_PAGE_ID: usize = size_of::<o16>();
 const SIZE_PAGE_TYPE: usize = size_of::<u8>();
@@ -39,7 +40,7 @@ pub const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
     + SIZE_FREE_START
     + SIZE_FREE_END;
 
-pub const SINGLE_SLOT_SPACE_REQUIREMENT: usize = SINGLE_SLOT_HEADER_SIZE + SIZE_OF_SLOT_TABLE_ITEM;
+pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize = SINGLE_SLOT_HEADER_SIZE + SIZE_OF_SLOT_TABLE_ITEM;
 
 // 1x key size
 // 1x payload size
@@ -151,8 +152,7 @@ impl Page {
         let key_buf_type: PayloadType = Str;
 
         // For each key, payload pair the following header metadata required:
-        // | slot offset | ----> | payload size | payload type | key size | key type | overflow ref | key | payload |
-
+        // | slot offset | ----> | payload size | payload type | key size | key type | overflow ref | key | payload
         let slots_available = self.slots_available()?;
         if slots_available == 0 {
             panic!("No slot left!");
@@ -191,16 +191,27 @@ impl Page {
         key_buf_size: usize,
     ) -> Result<usize, InvalidPageOffsetError> {
         let slots_available = self.slots_available()?;
+        if slots_available == 0 {
+            return Ok(0);
+        }
         let free_space: usize = self.free_size().try_into()?;
-        Ok(free_space
-            - SINGLE_SLOT_SPACE_REQUIREMENT
-            - (slots_available - 1) * SINGLE_SLOT_SPACE_REQUIREMENT
-            - key_buf_size)
+        let single_record_reservation = SINGLE_RECORD_METADATA_SPACE_REQUIREMENT + MAX_KEY_SIZE;
+
+        Ok(
+            free_space
+            - SINGLE_RECORD_METADATA_SPACE_REQUIREMENT // headroom for the current key-payload.
+            - key_buf_size // current key.
+            - ((slots_available - 1) * single_record_reservation), // reserved headroom to satisfy min. requirements.
+        )
     }
 
     fn slots_available(&mut self) -> Result<usize, InvalidPageOffsetError> {
         let num_of_slots: usize = self.num_of_slots().try_into()?;
-        let slots_available: usize = FAN_OUT - num_of_slots;
+        let slots_available: usize = if num_of_slots == MAX_FAN_OUT {
+            0
+        } else {
+            MIN_FAN_OUT - num_of_slots
+        };
         Ok(slots_available)
     }
 
@@ -329,7 +340,7 @@ impl Page {
         let key_len_usize: usize = key_len.try_into()?;
         let page_size: usize = PAGE_SIZE.try_into()?;
         let max_payload_capacity =
-            page_size - (key_len_usize + TOTAL_HEADER_SIZE + SINGLE_SLOT_SPACE_REQUIREMENT);
+            page_size - (key_len_usize + TOTAL_HEADER_SIZE + SINGLE_RECORD_METADATA_SPACE_REQUIREMENT);
         let stringify = |b: Vec<u8>| String::from_utf8_lossy(b.as_slice()).to_string();
         let payload_offset = key_offset + key_len_usize;
         let mut payload = Self::read_le_into_buffer::<Vec<u8>>(
@@ -617,14 +628,18 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
     let max_page_size: usize = PAGE_SIZE.try_into()?;
     // available bytes consists of available space excluding the page header, one slot header
     // requirements, and the rest reserved for remaining slots, and key length.
-    let available_bytes = max_page_size - (TOTAL_HEADER_SIZE + (FAN_OUT * SINGLE_SLOT_SPACE_REQUIREMENT) + key.len());
+    let available_bytes = max_page_size
+        - (TOTAL_HEADER_SIZE + (MIN_FAN_OUT * SINGLE_RECORD_METADATA_SPACE_REQUIREMENT) + key.len());
     let payload_string = random_string(available_bytes);
     assert!(payload_string.len() < max_page_size);
     let data_node = Page::new_leaf(key, Payload::from_str(payload_string))?;
     let page = io::read(data_node.0 as usize);
     if let Some(leading_page) = page {
         let free_space: usize = leading_page.free_size().try_into()?;
-        assert_eq!(free_space, (FAN_OUT - 1) * SINGLE_SLOT_SPACE_REQUIREMENT);
+        assert_eq!(
+            free_space,
+            (MIN_FAN_OUT - 1) * SINGLE_RECORD_METADATA_SPACE_REQUIREMENT
+        );
     } else {
         assert!(false);
     }
