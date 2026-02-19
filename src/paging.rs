@@ -8,6 +8,7 @@ use rand::Rng;
 use std::cmp::min;
 use std::convert::TryInto;
 use std::io::Read;
+use std::sync::Arc;
 
 const ZERO: o16 = o16(0);
 static mut NEXT_PAGE_ID: o16 = o16(0);
@@ -40,7 +41,8 @@ pub const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
     + SIZE_FREE_START
     + SIZE_FREE_END;
 
-pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize = SINGLE_SLOT_HEADER_SIZE + SIZE_OF_SLOT_TABLE_ITEM;
+pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize =
+    SINGLE_SLOT_HEADER_SIZE + SIZE_OF_SLOT_TABLE_ITEM;
 
 // 1x key size
 // 1x payload size
@@ -339,8 +341,8 @@ impl Page {
         let key_offset = overflow_page_ref_offset + SIZE_PAGE_ID;
         let key_len_usize: usize = key_len.try_into()?;
         let page_size: usize = PAGE_SIZE.try_into()?;
-        let max_payload_capacity =
-            page_size - (key_len_usize + TOTAL_HEADER_SIZE + SINGLE_RECORD_METADATA_SPACE_REQUIREMENT);
+        let max_payload_capacity = page_size
+            - (key_len_usize + TOTAL_HEADER_SIZE + SINGLE_RECORD_METADATA_SPACE_REQUIREMENT);
         let stringify = |b: Vec<u8>| String::from_utf8_lossy(b.as_slice()).to_string();
         let payload_offset = key_offset + key_len_usize;
         let mut payload = Self::read_le_into_buffer::<Vec<u8>>(
@@ -362,7 +364,8 @@ impl Page {
 
             current_right_sibling = match io::read(current_right_sibling.0 as usize) {
                 Some(overflow_page) => {
-                    if let Ok((overflow_data, next_overflow)) = overflow_page.get_overflow_data() {
+                    let mutex = overflow_page.lock().unwrap();
+                    if let Ok((overflow_data, next_overflow)) = mutex.get_overflow_data() {
                         payload.extend_from_slice(&overflow_data);
                         next_overflow
                     } else {
@@ -614,7 +617,8 @@ fn verify_add_data_node_less_than_page_size() -> Result<(), InvalidPageOffsetErr
     let data_node = Page::new_leaf(Key::from_str("foo".to_string()), Payload::from_str(string))?;
     let page = io::read(data_node.0 as usize);
     if let Some(leading_page) = page {
-        assert!(leading_page.free_end() > leading_page.free_start());
+        let mutex = leading_page.lock().unwrap();
+        assert!(mutex.free_end() > mutex.free_start());
     } else {
         assert!(false);
     }
@@ -629,16 +633,20 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
     // available bytes consists of available space excluding the page header, one slot header
     // requirements, and the rest reserved for remaining slots, and key length.
     let available_bytes = max_page_size
-        - (TOTAL_HEADER_SIZE + (MIN_FAN_OUT * SINGLE_RECORD_METADATA_SPACE_REQUIREMENT) + key.len());
+        - (TOTAL_HEADER_SIZE
+            + SINGLE_RECORD_METADATA_SPACE_REQUIREMENT
+            + key.len()
+            + ((MIN_FAN_OUT - 1) * (SINGLE_RECORD_METADATA_SPACE_REQUIREMENT + MAX_KEY_SIZE)));
     let payload_string = random_string(available_bytes);
     assert!(payload_string.len() < max_page_size);
     let data_node = Page::new_leaf(key, Payload::from_str(payload_string))?;
     let page = io::read(data_node.0 as usize);
     if let Some(leading_page) = page {
-        let free_space: usize = leading_page.free_size().try_into()?;
+        let mutex = leading_page.lock().unwrap();
+        let free_space: usize = mutex.free_size().try_into()?;
         assert_eq!(
             free_space,
-            (MIN_FAN_OUT - 1) * SINGLE_RECORD_METADATA_SPACE_REQUIREMENT
+            (MIN_FAN_OUT - 1) * (SINGLE_RECORD_METADATA_SPACE_REQUIREMENT + MAX_KEY_SIZE)
         );
     } else {
         assert!(false);
@@ -662,7 +670,8 @@ fn verify_add_data_node_more_than_page_size() -> Result<(), InvalidPageOffsetErr
     // we read the first item in the list.
     let record_index = ZERO;
     if let Some(leading_page) = page {
-        if let Ok(payload) = leading_page.get_key_payload(record_index) {
+        let mutex = leading_page.lock().unwrap();
+        if let Ok(payload) = mutex.get_key_payload(record_index) {
             assert_eq!(input_value, payload)
         }
     } else {
