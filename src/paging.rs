@@ -701,9 +701,9 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
         Payload::from_str(input_value.clone()),
     )?;
     let page_id: usize = data_node.try_into()?;
-    let page = io::read(page_id);
+    let leading_page = io::read(page_id).expect("failed to read page");
     let second_input = random_string(PAGE_SIZE * 2);
-    if let Some(leading_page) = page {
+    {
         // first read data from disk and add another payload into the page.
         let mut mutex = leading_page.lock().unwrap();
         let _ = mutex.add(
@@ -711,12 +711,13 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
             Payload::from_str(second_input.clone()),
         )?;
     }
-    let page = io::read(page_id);
-    if let Some(leading_page) = page {
-        let mutex = leading_page.lock().unwrap();
-        let num_of_slots: usize = mutex.num_of_slots().try_into()?;
+
+    let leading_page = io::read(page_id).expect("failed to read page");
+    {
+        let guard = leading_page.lock().unwrap();
+        let num_of_slots: usize = guard.num_of_slots().try_into()?;
         assert_eq!(num_of_slots, 2);
-        let bar_value = mutex.get_for_key(Key::from_str("bar".to_string()));
+        let bar_value = guard.get_for_key(Key::from_str("bar".to_string()));
         if let Ok(a) = bar_value {
             assert_eq!(second_input.clone(), a);
         }
