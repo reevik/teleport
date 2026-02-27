@@ -107,7 +107,7 @@ impl Mul<o16> for o16 {
     type Output = o16;
 
     fn mul(self, rhs: o16) -> Self::Output {
-        o16(rhs.0 * self.0)
+        o16(rhs.0.checked_mul(self.0).expect("overflow"))
     }
 }
 

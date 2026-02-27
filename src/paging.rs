@@ -647,7 +647,7 @@ fn verify_read_the_inserted() {
 #[test]
 fn verify_add_data_node_less_than_page_size() -> Result<(), InvalidPageOffsetError> {
     let page_size: usize = PAGE_SIZE.try_into()?;
-    let string = random_string(o16::from_u16(100u16));
+    let string = random_string(100);
     assert!(string.len() < page_size);
     let data_node = Page::new_leaf(Key::from_str("foo".to_string()), Payload::from_str(string))?;
     let page = io::read(data_node.0 as usize);
@@ -672,7 +672,8 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
             + SINGLE_RECORD_METADATA_SPACE_REQUIREMENT
             + key.len()
             + ((MIN_FAN_OUT - 1) * (SINGLE_RECORD_METADATA_SPACE_REQUIREMENT + MAX_KEY_SIZE)));
-    let payload_string = random_string(available_bytes);
+    let available_space = available_bytes.try_into()?;
+    let payload_string = random_string(available_space);
     assert!(payload_string.len() < max_page_size);
     let data_node = Page::new_leaf(key, Payload::from_str(payload_string))?;
     let page = io::read(data_node.0 as usize);
@@ -694,24 +695,15 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
     delete_index();
     let page_size: usize = PAGE_SIZE.try_into()?;
     // one head page and two overflow pages expected.
-    let input_value = random_string(PAGE_SIZE * 2);
+    let input_value = random_string(page_size * 2);
     assert!(input_value.len() > page_size);
     let data_node = Page::new_leaf(
         Key::from_str("foo".to_string()),
         Payload::from_str(input_value.clone()),
     )?;
     let page_id: usize = data_node.try_into()?;
-    let leading_page = io::read(page_id).expect("failed to read page");
-    let second_input = random_string(PAGE_SIZE * 2);
-    {
-        // first read data from disk and add another payload into the page.
-        let mut mutex = leading_page.lock().unwrap();
-        let _ = mutex.add(
-            Key::from_str("bar".to_string()),
-            Payload::from_str(second_input.clone()),
-        )?;
-    }
-
+    let second_input = random_string(page_size * 2);
+    add_to_page(page_id, "bar".to_string(), second_input.clone());
     let leading_page = io::read(page_id).expect("failed to read page");
     {
         let guard = leading_page.lock().unwrap();
@@ -725,12 +717,23 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
     Ok(())
 }
 
+fn add_to_page(page_id: usize, key: String, second_input: String)  {
+    let leading_page = io::read(page_id).expect("failed to read page");
+    {
+        let mut mutex = leading_page.lock().unwrap();
+        let _ = mutex.add(
+            Key::from_str(key),
+            Payload::from_str(second_input),
+        ).unwrap();
+    };
+}
+
 #[test]
 fn verify_add_payload_larger_than_available_size() -> Result<(), InvalidPageOffsetError> {
     delete_index();
     let page_size: usize = PAGE_SIZE.try_into()?;
     // one head page and two overflow pages expected.
-    let input_value = random_string(PAGE_SIZE * 2);
+    let input_value = random_string(page_size * 2);
     assert!(input_value.len() > page_size);
     let data_node = Page::new_leaf(
         Key::from_str("foo".to_string()),
@@ -752,10 +755,36 @@ fn verify_add_payload_larger_than_available_size() -> Result<(), InvalidPageOffs
     Ok(())
 }
 
-fn random_string(len: o16) -> String {
+// This test ensures minimum fan-out in case all payloads exceeds the page capacity.
+#[test]
+fn verify_no_space_left_in_head_after_inserting_overflowed_pages() {
+    delete_index();
+    let page_size: usize = PAGE_SIZE.try_into().expect("");
+    let input_value = random_string(page_size * 2);
+    assert!(input_value.len() > page_size);
+    let data_node_id = Page::new_leaf(
+        Key::from_str("foo".to_string()),
+        Payload::from_str(input_value.clone()),
+    ).unwrap().get();
+
+    // Fill the page slots up with overflowing payloads.
+    for i in 0..MIN_FAN_OUT - 1 {
+        let random_key = random_string(9);
+        add_to_page(data_node_id, random_key, input_value.clone());
+    }
+
+    let page = io::read(data_node_id).expect("failed to read page");
+    {
+        let mutex = page.lock().unwrap();
+        let free_size: usize = mutex.free_size().try_into().expect("");
+        assert_eq!(free_size, 0)
+    }
+}
+
+fn random_string(len: usize) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut rng = rand::thread_rng();
-    let s: String = (0..len.get())
+    let s: String = (0..len)
         .map(|_| {
             let idx = rng.gen_range(0..CHARSET.len());
             CHARSET[idx] as char
