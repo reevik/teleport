@@ -14,7 +14,7 @@ static mut NEXT_PAGE_ID: o16 = o16(0);
 pub(crate) const PAGE_SIZE: o16 = o16(8172);
 pub(crate) const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
 const MIN_FAN_OUT: usize = 5;
-const MAX_FAN_OUT: usize = 5;
+const MAX_FAN_OUT: usize = 10;
 const MAX_KEY_SIZE: usize = 1024;
 const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
 const SIZE_PAGE_ID: usize = size_of::<o16>();
@@ -717,14 +717,13 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
     Ok(())
 }
 
-fn add_to_page(page_id: usize, key: String, second_input: String)  {
+fn add_to_page(page_id: usize, key: String, second_input: String) {
     let leading_page = io::read(page_id).expect("failed to read page");
     {
         let mut mutex = leading_page.lock().unwrap();
-        let _ = mutex.add(
-            Key::from_str(key),
-            Payload::from_str(second_input),
-        ).unwrap();
+        let _ = mutex
+            .add(Key::from_str(key), Payload::from_str(second_input))
+            .unwrap();
     };
 }
 
@@ -755,6 +754,32 @@ fn verify_add_payload_larger_than_available_size() -> Result<(), InvalidPageOffs
     Ok(())
 }
 
+#[test]
+#[should_panic(expected = "No slot left!")]
+fn verify_max_fan_out() {
+    delete_index();
+    let input_value = "".to_string();
+    let data_node_id = Page::new_leaf(
+        Key::from_str("foo".to_string()),
+        Payload::from_str(input_value.clone()),
+    )
+    .unwrap()
+    .get();
+
+    // Fill the page slots up with overflowing payloads.
+    for i in 0..MAX_FAN_OUT + 1 {
+        let random_key = random_string(3);
+        add_to_page(data_node_id, random_key, input_value.clone());
+    }
+
+    let page = io::read(data_node_id).expect("failed to read page");
+    {
+        let mutex = page.lock().unwrap();
+        let free_size: usize = mutex.free_size().try_into().expect("");
+        assert_eq!(free_size, 0)
+    }
+}
+
 // This test ensures minimum fan-out in case all payloads exceeds the page capacity.
 #[test]
 fn verify_no_space_left_in_head_after_inserting_overflowed_pages() {
@@ -765,7 +790,9 @@ fn verify_no_space_left_in_head_after_inserting_overflowed_pages() {
     let data_node_id = Page::new_leaf(
         Key::from_str("foo".to_string()),
         Payload::from_str(input_value.clone()),
-    ).unwrap().get();
+    )
+    .unwrap()
+    .get();
 
     // Fill the page slots up with overflowing payloads.
     for i in 0..MIN_FAN_OUT - 1 {
