@@ -13,8 +13,8 @@ An experimental B-tree based nosql database. Its purpose is solely educational a
 * Write-ahead log.
 * Data sharding.
 * Consensus algorithm.
-* Data consistency levels.
-* Query parser.
+* Data consistency control.
+* Query parser and optimization.
 * Page compaction.
 * Optimized disk I/O. 
 
